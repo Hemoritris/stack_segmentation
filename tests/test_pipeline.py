@@ -1,6 +1,6 @@
 import numpy as np
 
-from box_perception.pipeline import run_synthetic_demo
+from box_perception.pipeline import run_synthetic_demo, run_tilted_demo
 
 
 def _errors(result: dict) -> tuple[float, float, float]:
@@ -43,6 +43,14 @@ def test_two_layer_stack():
         depth_noise=0.005,
         existing_boxes=[(0.0, 0.0, 0.6, 0.4, 0.35, 0.0)],
     )
+    e_xy, e_z, e_yaw = _errors(result)
+    assert e_xy < 10.0
+    assert e_z < 5.0
+    assert e_yaw < 2.0
+
+
+def test_tilted_camera():
+    result = run_tilted_demo(tilt_deg=15.0, depth_noise=0.005)
     e_xy, e_z, e_yaw = _errors(result)
     assert e_xy < 10.0
     assert e_z < 5.0

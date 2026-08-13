@@ -115,3 +115,105 @@ def ortho_depth_to_world(depth, pixel_size_m, cx, cy, cam_height) -> np.ndarray:
     Y = (v[valid] - cy) * pixel_size_m
     Z = cam_height - d[valid]
     return np.stack([X, Y, Z], axis=1)
+
+
+def make_tilted_camera(
+    width: int,
+    height: int,
+    cam_height: float,
+    fx: float | None = None,
+    tilt_deg: float = 0.0,
+):
+    """构造一个可倾斜的透视相机（光轴不再要求与地面垂直）。
+
+    tilt_deg：绕世界 Y 轴的倾斜角（度），0 表示正俯视。
+    Returns:
+        (intrinsics, T_cam_world)。
+    """
+    fx = float(width) if fx is None else float(fx)
+    fy = fx
+    cx = (width - 1) / 2.0
+    cy = (height - 1) / 2.0
+    intrinsics = {"fx": fx, "fy": fy, "cx": cx, "cy": cy}
+
+    a = np.deg2rad(tilt_deg)
+    z_c = np.array([-np.sin(a), 0.0, -np.cos(a)])  # 光轴，指向场景
+    x_c = np.array([np.cos(a), 0.0, -np.sin(a)])
+    y_c = np.cross(z_c, x_c)
+    y_c = y_c / np.linalg.norm(y_c)
+    R = np.stack([x_c, y_c, z_c], axis=1)  # 列向量为相机轴在世界系下的方向
+    t = -z_c * cam_height  # 使光轴经过世界原点
+
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3, 3] = t
+    return intrinsics, T
+
+
+def render_perspective_depth(
+    width: int,
+    height: int,
+    intrinsics: dict,
+    T_cam_world,
+    boxes,
+    noise: float = 0.0,
+    seed: int = 0,
+) -> np.ndarray:
+    """透视相机深度渲染（相机系 z），包含箱体顶面与侧壁的遮挡。
+
+    通过逐像素光线与 floor(z=0) 以及各箱体 AABB（在箱体局部系）求交，
+    取最近命中距离作为深度。
+    """
+    fx = intrinsics["fx"]
+    fy = intrinsics["fy"]
+    cx = intrinsics["cx"]
+    cy = intrinsics["cy"]
+    R = np.asarray(T_cam_world)[:3, :3]
+    t = np.asarray(T_cam_world)[:3, 3]
+
+    uu, vv = np.meshgrid(np.arange(width, dtype=float), np.arange(height, dtype=float))
+    dir_c = np.stack([(uu - cx) / fx, (vv - cy) / fy, np.ones_like(uu)], axis=0)
+    dir_w = np.einsum("ij,jhw->ihw", R, dir_c)
+
+    depth = np.full((height, width), np.nan, dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t_floor = -t[2] / dir_w[2]
+    hit_floor = (dir_w[2] < 0) & np.isfinite(t_floor) & (t_floor > 0)
+    depth[hit_floor] = t_floor[hit_floor]
+
+    for bx, by, L, W, H, yaw in boxes:
+        th = np.deg2rad(yaw)
+        Rbox = np.array(
+            [
+                [np.cos(th), -np.sin(th), 0.0],
+                [np.sin(th), np.cos(th), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        center = np.array([bx, by, 0.0])
+        O_l = Rbox.T @ (t - center)
+        D_l = np.einsum("ij,jhw->ihw", Rbox.T, dir_w)
+        lo = np.array([-L / 2.0, -W / 2.0, 0.0])
+        hi = np.array([L / 2.0, W / 2.0, H])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t1 = (lo[:, None, None] - O_l[:, None, None]) / D_l
+            t2 = (hi[:, None, None] - O_l[:, None, None]) / D_l
+        tmin = np.minimum(t1, t2)
+        tmax = np.maximum(t1, t2)
+        t_enter = np.max(tmin, axis=0)
+        t_exit = np.min(tmax, axis=0)
+        hit_box = (
+            (t_enter <= t_exit)
+            & (t_exit >= 0.0)
+            & (t_enter > 0.0)
+            & np.isfinite(t_enter)
+        )
+        closer = hit_box & (np.isnan(depth) | (t_enter < depth))
+        depth = np.where(closer, t_enter, depth)
+
+    if noise > 0:
+        rng = np.random.default_rng(seed)
+        n = rng.normal(0.0, noise, depth.shape)
+        depth = np.where(np.isfinite(depth), depth + n, depth)
+
+    return depth.astype(np.float32)
