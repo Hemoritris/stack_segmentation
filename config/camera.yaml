@@ -1,0 +1,32 @@
+# L515 相机与标定配置。数值均为占位示例，请以实际标定结果替换。
+camera:
+  model: "L515"
+  color_width: 1920
+  color_height: 1080
+  color_fps: 30
+  depth_width: 1280
+  depth_height: 720
+  depth_fps: 30
+
+intrinsics:
+  depth:
+    fx: 0.0
+    fy: 0.0
+    cx: 0.0
+    cy: 0.0
+    distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
+  color:
+    fx: 0.0
+    fy: 0.0
+    cx: 0.0
+    cy: 0.0
+    distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
+
+extrinsics:
+  # 相机 -> 世界 的 4x4 齐次变换（行优先）。示例为单位阵，需替换为标定结果。
+  T_cam_world:
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+

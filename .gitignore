@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.prof
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Codex / agent 本地状态
+.codex/
+.agents/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data / models / records（大文件或环境相关，不入库，建议使用 LFS 或外部存储）
+data/
+datasets/
+record/
+*.pt
+*.onnx
+*.engine
+*.trt
+*.bag
+*.pcd
+*.ply
+*.npy
+*.npz
+*.zip
+
+# Logs
+logs/
+*.log
+
+# ROS
+devel/
+install/

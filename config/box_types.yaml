@@ -1,0 +1,17 @@
+# 箱型 / SKU 尺寸库。单位：米。
+default_box: "A"
+
+box_types:
+  A:
+    length: 0.600
+    width: 0.400
+    height: 0.350
+  B:
+    length: 0.500
+    width: 0.400
+    height: 0.300
+  C:
+    length: 0.400
+    width: 0.300
+    height: 0.250
+

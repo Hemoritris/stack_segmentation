@@ -1,0 +1,25 @@
+# 世界坐标系、托盘 ROI 与各阶段阈值配置。
+world:
+  axis_convention: "X=托盘长方向, Y=托盘宽方向, Z=向上, yaw=绕+Z"
+
+pallet_roi:
+  x_min: -0.70
+  x_max: 0.70
+  y_min: -0.60
+  y_max: 0.60
+
+height_map:
+  grid_size_m: 0.005        # 5 mm/cell
+  aggregation: "median"     # median | percentile | filtered_mean
+  percentile: 50
+
+change_detection:
+  min_height_diff_m: 0.01   # 10 mm
+  morph_kernel: 3
+  min_area_m2: 0.005
+
+stability:
+  window_frames: 8
+  pos_std_max_m: 0.005
+  yaw_std_max_deg: 0.5
+
