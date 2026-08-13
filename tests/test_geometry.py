@@ -1,6 +1,9 @@
 import numpy as np
 
-from box_perception.geometry.pointcloud import depth_to_pointcloud
+from box_perception.geometry.pointcloud import (
+    depth_to_pointcloud,
+    masked_depth_to_pointcloud,
+)
 from box_perception.geometry.rectangle_init import fit_min_area_rect
 
 
@@ -35,4 +38,13 @@ def test_depth_to_pointcloud():
     pts = depth_to_pointcloud(depth, fx, fy, cx, cy)
     assert pts.shape == (3, 3)
     assert np.all(pts[:, 2] == 1.0)
+
+
+def test_masked_depth_to_pointcloud():
+    depth = np.full((2, 2), 1.0, dtype=np.float32)
+    mask = np.array([[True, False], [False, True]])
+    pts = masked_depth_to_pointcloud(depth, mask, 100.0, 100.0, 0.5, 0.5)
+    expected = np.array([[-0.005, -0.005, 1.0], [0.005, 0.005, 1.0]])
+    assert pts.shape == (2, 3)
+    assert np.allclose(pts, expected, atol=1e-6)
 

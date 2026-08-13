@@ -58,3 +58,13 @@ class HeightMap:
         inds = np.flatnonzero(has)
         height[inds // self.nx, inds % self.nx] = vals[inds]
         return height
+
+    def world_to_indices(self, points_xy):
+        """把 (N, 2) 世界 XY 坐标映射到栅格索引 (ix, iy, valid)。"""
+        pts = np.asarray(points_xy, dtype=np.float64)
+        if pts.ndim != 2 or pts.shape[1] != 2:
+            raise ValueError("points_xy 必须是 (N, 2)")
+        ix = np.floor((pts[:, 0] - self.x_min) / self.grid_size_m).astype(np.int64)
+        iy = np.floor((pts[:, 1] - self.y_min) / self.grid_size_m).astype(np.int64)
+        valid = (ix >= 0) & (ix < self.nx) & (iy >= 0) & (iy < self.ny)
+        return ix, iy, valid
