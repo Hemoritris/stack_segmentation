@@ -53,6 +53,23 @@ python -m pip install -e ".[viz]"
 
 `pyrealsense2` 与 `ultralytics` 依赖具体平台与加速库（CUDA / TensorRT），建议按目标部署机（如 Orin）单独确认版本，不要盲目升级。
 
+## 无相机自测
+
+在相机未安装 / 未标定时，可用合成场景验证 M2~M8 的几何链路：
+
+```bash
+# 端到端跑一次，打印真值 / 估计 / 误差
+python scripts/run_pipeline.py
+
+# 在噪声、紧贴邻箱、两层叠放等退化场景下评估精度
+python scripts/benchmark_synthetic.py
+
+# 回归测试
+python -m pytest
+```
+
+合成相机采用**正俯视正交投影**近似（对高挂顶相机是合理简化，且避免了透视带来的箱边地板/顶面伪重叠）；真实 L515 为透视成像，换真机后需单独验证箱边的视差 / 遮挡效应。
+
 ## 开发约定
 
 - **分支模型**：`main` 保持可用；功能开发在 `feature/*` 分支；阶段性可交付打 `release/v*` 标签（对应 V1/V2/V3 验收）。

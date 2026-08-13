@@ -47,28 +47,21 @@ def make_overhead_camera(
     width: int,
     height: int,
     cam_height: float,
-    fx: float | None = None,
-    fy: float | None = None,
+    pixel_size_m: float = 0.005,
 ):
-    """构造一个正俯视、光轴朝下的虚拟相机。
+    """构造一个正俯视、光轴朝下的（近似）正交投影虚拟相机。
 
     Returns:
-        (intrinsics, T_cam_world)。intrinsics 含 fx/fy/cx/cy；T_cam_world 为 4x4 齐次变换。
+        intrinsics dict，含 pixel_size_m / cx / cy / cam_height。
     """
-    fx = float(width) if fx is None else float(fx)
-    fy = fx if fy is None else float(fy)
     cx = (width - 1) / 2.0
     cy = (height - 1) / 2.0
-    intrinsics = {"fx": fx, "fy": fy, "cx": cx, "cy": cy}
-    T_cam_world = np.array(
-        [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, -1.0, cam_height],
-            [0.0, 0.0, 0.0, 1.0],
-        ]
-    )
-    return intrinsics, T_cam_world
+    return {
+        "pixel_size_m": float(pixel_size_m),
+        "cx": cx,
+        "cy": cy,
+        "cam_height": float(cam_height),
+    }
 
 
 def _in_rotated_rect(x, y, cx, cy, length, width, yaw_deg) -> np.ndarray:
@@ -86,24 +79,39 @@ def render_scene_depth(
     cam_height: float,
     intrinsics: dict,
     boxes,
+    noise: float = 0.0,
+    seed: int = 0,
 ) -> np.ndarray:
-    """渲染正俯视深度图（相机坐标系 z），floor 在 world z=0。
+    """渲染正俯视正交深度图（相机坐标系 z），floor 在 world z=0。
 
     Args:
-        boxes: 可迭代的 (cx, cy, length, width, height, yaw_deg)。
-        正俯视下箱体侧面不可见，仅渲染顶面。
+        boxes: 可迭代的 (cx, cy, length, width, top_z, yaw_deg)。
+        正俯视正交投影下箱体侧面不可见，仅渲染顶面。
+        noise: 加到深度上的高斯噪声标准差（米）。
     """
-    fx = intrinsics["fx"]
-    fy = intrinsics["fy"]
+    ps = intrinsics["pixel_size_m"]
     cx = intrinsics["cx"]
     cy = intrinsics["cy"]
     uu, vv = np.meshgrid(np.arange(width, dtype=float), np.arange(height, dtype=float))
-    depth = np.full((height, width), cam_height, dtype=np.float32)
-    for bx, by, L, W, H, yaw in boxes:
-        z_cam = cam_height - H
-        Xb = (uu - cx) / fx * z_cam
-        Yb = (vv - cy) / fy * z_cam
-        inside = _in_rotated_rect(Xb, Yb, bx, by, L, W, yaw)
-        depth[inside] = np.minimum(depth[inside], z_cam)
+    X = (uu - cx) * ps
+    Y = (vv - cy) * ps
+    depth = np.full((height, width), cam_height, dtype=np.float32)  # floor
+    for bx, by, L, W, top_z, yaw in boxes:
+        inside = _in_rotated_rect(X, Y, bx, by, L, W, yaw)
+        depth[inside] = np.minimum(depth[inside], cam_height - top_z)
+    if noise > 0:
+        rng = np.random.default_rng(seed)
+        depth = depth + rng.normal(0.0, noise, depth.shape).astype(np.float32)
+        depth = np.maximum(depth, 1e-3)
     return depth
 
+
+def ortho_depth_to_world(depth, pixel_size_m, cx, cy, cam_height) -> np.ndarray:
+    """把正俯视正交深度图反投影为 world 坐标 (N, 3) 点云。"""
+    d = np.asarray(depth, dtype=np.float64)
+    v, u = np.indices(d.shape)
+    valid = (d > 0) & np.isfinite(d)
+    X = (u[valid] - cx) * pixel_size_m
+    Y = (v[valid] - cy) * pixel_size_m
+    Z = cam_height - d[valid]
+    return np.stack([X, Y, Z], axis=1)

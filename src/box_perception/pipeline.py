@@ -8,13 +8,11 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from .camera.calibration import cam_to_world
 from .core.types import BoxInstance
 from .geometry.box_optimizer import BoxOptimizer
 from .geometry.plane_fitting import fit_top_plane
-from .geometry.pointcloud import depth_to_pointcloud
 from .geometry.rectangle_init import fit_min_area_rect
-from .synthetic import make_overhead_camera, render_scene_depth
+from .synthetic import make_overhead_camera, ortho_depth_to_world, render_scene_depth
 from .temporal.change_detector import detect_change
 from .temporal.height_map import HeightMap
 from .temporal.new_box_association import associate_new_box
@@ -24,26 +22,40 @@ def run_synthetic_demo(
     box_center=(0.1, -0.05),
     box_size=(0.6, 0.4, 0.35),
     yaw_deg: float = 25.0,
+    base_z: float = 0.0,
+    existing_boxes=None,
     cam_height: float = 2.5,
     image_size=(240, 320),
     roi=((-0.9, 0.9), (-0.9, 0.9)),
     grid_size: float = 0.01,
+    depth_noise: float = 0.0,
+    seed: int = 0,
 ) -> dict:
-    """在合成场景跑一遍 M2~M8，返回 est / true 位姿与代价。"""
+    """在合成场景跑一遍 M2~M8，返回 est / true 位姿与代价。
+
+    existing_boxes: 已存在箱体列表，元素 (cx, cy, length, width, top_z, yaw_deg)。
+    base_z: 新箱放置面的高度；新箱顶面高度 = base_z + height。
+    """
     length, width, height = box_size
     bx, by = box_center
+    new_top_z = base_z + height
     img_h, img_w = image_size
 
-    intrinsics, T_cam_world = make_overhead_camera(img_w, img_h, cam_height, fx=float(img_w))
+    intrinsics = make_overhead_camera(img_w, img_h, cam_height, pixel_size_m=0.005)
 
     # M0/M5 反投影半段：渲染前后深度，转 world 点云
-    depth_before = render_scene_depth(img_w, img_h, cam_height, intrinsics, boxes=[])
+    before_boxes = list(existing_boxes or [])
+    after_boxes = before_boxes + [(bx, by, length, width, new_top_z, yaw_deg)]
+    depth_before = render_scene_depth(
+        img_w, img_h, cam_height, intrinsics,
+        boxes=before_boxes, noise=depth_noise, seed=seed,
+    )
     depth_after = render_scene_depth(
         img_w, img_h, cam_height, intrinsics,
-        boxes=[(bx, by, length, width, height, yaw_deg)],
+        boxes=after_boxes, noise=depth_noise, seed=seed + 1,
     )
-    pts_before = cam_to_world(depth_to_pointcloud(depth_before, **intrinsics), T_cam_world)
-    pts_after = cam_to_world(depth_to_pointcloud(depth_after, **intrinsics), T_cam_world)
+    pts_before = ortho_depth_to_world(depth_before, **intrinsics)
+    pts_after = ortho_depth_to_world(depth_after, **intrinsics)
 
     # M2 高度图
     hm = HeightMap(x_range=roi[0], y_range=roi[1], grid_size_m=grid_size, aggregation="median")
@@ -90,7 +102,6 @@ def run_synthetic_demo(
 
     return {
         "est": (x, y, z_center, np.rad2deg(yaw_rad)),
-        "true": (bx, by, height / 2.0, yaw_deg),
+        "true": (bx, by, base_z + height / 2.0, yaw_deg),
         "cost": cost,
     }
-
