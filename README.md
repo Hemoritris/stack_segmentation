@@ -71,6 +71,10 @@ cd /home/han/文档/segmentation/stack_seg
 ./scripts/start_fixed_l515_rgbd.sh
 ```
 
+本机同时安装了系统 librealsense `2.58.3` 和 L515 专用 librealsense `2.54.2`。
+该脚本固定使用专用 `2.54.2` 与 RealSense ROS `4.54.1`，启动时会打印并校验实际路径；
+不要用 `/usr/bin/realsense-viewer`（系统 `2.58.3`）启动这台 L515。
+
 该脚本会停止同名的标定彩色-only 驱动，避免两个进程争抢 L515。它应发布：
 
 ```text
@@ -92,9 +96,12 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export CYCLONEDDS_URI=file:///home/han/文档/segmentation/yp2orin/arm_control/cyclonedds_local.xml
 
 cd /home/han/文档/segmentation/stack_seg
-PYTHONPATH=src python3 scripts/check_real_rgbd.py \
+/usr/bin/python3 scripts/check_real_rgbd.py \
   --output record/rgbd_preflight
 ```
+
+这里不要写 `PYTHONPATH=src`。该脚本会自行加入项目的 `src` 目录；手动使用
+`PYTHONPATH=src` 会覆盖 ROS 2 设置的 Python 路径，导致 `rclpy` 无法导入。
 
 程序会严格检查实时 CameraInfo 是否仍为标定时的 `1280x720`、K/D 和
 `fixed_l515_color_optical_frame`，随后完成：
@@ -109,7 +116,7 @@ aligned depth [m]
 连续录制真实 RGB-D 数据：
 
 ```bash
-PYTHONPATH=src python3 scripts/record_rgbd.py \
+/usr/bin/python3 scripts/record_rgbd.py \
   --output-dir record/before \
   --frames 30 \
   --interval 0.2

@@ -86,7 +86,10 @@ class ROSAlignedRGBDSource:
             from sensor_msgs.msg import CameraInfo, Image
         except ImportError as exc:
             raise RuntimeError(
-                "ROS 2 Python interfaces unavailable; source /opt/ros/humble/setup.bash"
+                "ROS 2 Python interfaces unavailable. Run "
+                "'source /opt/ros/humble/setup.bash' and use /usr/bin/python3. "
+                "Do not invoke this script with 'PYTHONPATH=src', because that replaces "
+                "the ROS 2 Python search paths."
             ) from exc
         self._rclpy = rclpy
         self._configured = configured_intrinsics
