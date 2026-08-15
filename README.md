@@ -130,6 +130,32 @@ aligned depth [m]
 每帧保存无损彩色 PNG、米制对齐深度 NPY 和时间戳；`manifest.json` 同时冻结内参、外参、
 地图哈希和坐标系。`record/` 已被 Git 忽略。
 
+### YOLO RGB 图片交互采集
+
+需要为 YOLO 标注或微调采集彩色图片时，终端 1 仍按上文运行
+`./scripts/start_fixed_l515_rgbd.sh`。终端 2 运行：
+
+```bash
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file:///home/han/文档/segmentation/yp2orin/arm_control/cyclonedds_local.xml
+
+cd /home/han/文档/segmentation/stack_seg
+/usr/bin/python3 scripts/collect_yolo_rgb.py \
+  --output-dir record/yolo_sessions/train_20260815
+```
+
+先用鼠标点击图像窗口，让它获得键盘焦点：
+
+- 按 `K`：保存当前一帧原始 RGB 图片；
+- 按 `Q`：结束本次采集并退出；
+- `Ctrl+C`：也可安全结束。
+
+输出目录只会生成 `rgb_000000.png`、`rgb_000001.png` 等无损 RGB 图片，不保存深度、
+相机参数或预览文字。再次使用同一目录会从已有最大编号继续，不会覆盖旧图片。每次调整箱子
+数量、位置、角度、遮挡和光照后再按一次 `K`；训练、验证和测试图片建议分别保存到不同目录。
+
 空托盘采集完成后，必须先识别并冻结托盘参考系：
 
 ```bash
