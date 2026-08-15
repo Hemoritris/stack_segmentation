@@ -60,6 +60,7 @@ python -m pip install -e ".[viz]"
 - 彩色：`1280x720@30`；
 - 原生深度：`1024x768@30`；
 - 感知输入：对齐到彩色图的 `1280x720` 深度；
+- 彩色和深度统一使用 L515 硬件时钟，ROS wrapper 开启软件最近帧同步；
 - 对齐深度反投影使用厂家彩色 K/D；
 - 世界外参读取 `two_camera` 当前 map2 的 `_filtered.json`，并校验地图 SHA256；
 - 输出世界坐标系：`slamware_map`。
@@ -86,6 +87,10 @@ cd /home/han/文档/segmentation/stack_seg
 若输出 `L515 is not present` 或驱动出现连续 `No such device`，说明设备已从 USB 总线掉线。
 停止驱动、物理重新插拔 L515、等待约 3 秒后再启动；不要同时启动 `two_camera` 的
 `start_fixed_l515.sh`。
+
+L515 固件 `1.5.4.1` 可能周期性打印 `control_transfer ... index: 768 ...
+Resource temporarily unavailable`。该警告本身不等于图像中断；以三个目标话题存在且下方
+预检输出全部 `[PASS]` 为准。若预检超时或日志出现 `No such device`，再按 USB 掉线处理。
 
 终端 2 检查一帧完整链路：
 

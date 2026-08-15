@@ -82,5 +82,5 @@ exec ros2 launch realsense2_camera rs_launch.py \
   enable_infra2:=false \
   pointcloud.enable:=false \
   align_depth.enable:=true \
-  enable_sync:=false \
+  enable_sync:=true \
   publish_tf:=true

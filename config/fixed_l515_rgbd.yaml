@@ -1,8 +1,11 @@
 # Passed directly to realsense2_camera through rs_launch.py config_file.
 enable_infra: false
-rgb_camera.global_time_enabled: true
+# Color and depth must use the same L515 hardware-clock domain. Enabling global
+# time on color only prevents the wrapper syncer from forming RGB-D framesets.
+rgb_camera.global_time_enabled: false
+depth_module.global_time_enabled: false
 color_qos: SENSOR_DATA
 depth_qos: SENSOR_DATA
-# L515 firmware 1.5.4.1 fails an XU control when hardware stream sync is forced.
-# The align filter and the Python timestamp matcher do not require that mode.
-enable_sync: false
+# This is RealSense ROS software nearest-frame grouping, not hardware inter-camera
+# sync. align_depth receives framesets only when this is enabled.
+enable_sync: true
