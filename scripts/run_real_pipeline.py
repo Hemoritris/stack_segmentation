@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from box_perception.real_pipeline import (  # noqa: E402
     load_recording,
+    project_world_points_to_image,
     run_recorded_real_pipeline,
 )
 
@@ -42,7 +43,70 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _save_debug(output: Path, after_color: np.ndarray, result: dict, artifacts) -> None:
+def _pixel(point: np.ndarray) -> tuple[int, int]:
+    return int(round(float(point[0]))), int(round(float(point[1])))
+
+
+def _draw_pose_axes(overlay: np.ndarray, result: dict, manifest: dict) -> None:
+    pose = result["pose_4dof"]
+    size = result["box_size_prior_m"]
+    top_z = float(result["surface"]["top_z_m"])
+    center = np.array([pose["x_m"], pose["y_m"], top_z], dtype=np.float64)
+    yaw = np.deg2rad(float(pose["yaw_deg"]))
+    length_axis = np.array([np.cos(yaw), np.sin(yaw), 0.0])
+    width_axis = np.array([-np.sin(yaw), np.cos(yaw), 0.0])
+    half_l = float(size["length"]) / 2.0
+    half_w = float(size["width"]) / 2.0
+    corners = np.array(
+        [
+            center + sx * half_l * length_axis + sy * half_w * width_axis
+            for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))
+        ]
+    )
+    world_points = np.vstack(
+        [
+            center,
+            center + np.array([0.25, 0.0, 0.0]),
+            center - half_l * length_axis,
+            center + half_l * length_axis,
+            center - half_w * width_axis,
+            center + half_w * width_axis,
+            corners,
+        ]
+    )
+    intrinsics = manifest["intrinsics"]
+    pixels = project_world_points_to_image(
+        world_points,
+        np.asarray(manifest["world_T_camera"], dtype=np.float64),
+        np.asarray(intrinsics["k"], dtype=np.float64),
+        np.asarray(intrinsics["distortion"], dtype=np.float64),
+    )
+    if not np.all(np.isfinite(pixels)):
+        return
+    p = [_pixel(point) for point in pixels]
+    center_px, world_x_px = p[0], p[1]
+    length_a, length_b = p[2], p[3]
+    width_a, width_b = p[4], p[5]
+    corner_pixels = np.asarray(p[6:10], dtype=np.int32).reshape(-1, 1, 2)
+
+    cv2.polylines(overlay, [corner_pixels], True, (255, 0, 255), 3, cv2.LINE_AA)
+    cv2.arrowedLine(overlay, center_px, world_x_px, (255, 80, 0), 3, cv2.LINE_AA, tipLength=0.12)
+    cv2.line(overlay, length_a, length_b, (0, 0, 255), 4, cv2.LINE_AA)
+    cv2.arrowedLine(overlay, center_px, length_b, (0, 0, 255), 4, cv2.LINE_AA, tipLength=0.12)
+    cv2.line(overlay, width_a, width_b, (0, 200, 0), 4, cv2.LINE_AA)
+    cv2.circle(overlay, center_px, 7, (255, 255, 0), -1, cv2.LINE_AA)
+    cv2.putText(overlay, "+X world", world_x_px, cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 80, 0), 2)
+    cv2.putText(overlay, "+L / yaw", length_b, cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
+    cv2.putText(overlay, "W", width_b, cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 200, 0), 2)
+
+
+def _save_debug(
+    output: Path,
+    after_color: np.ndarray,
+    result: dict,
+    artifacts,
+    manifest: dict,
+) -> None:
     output.mkdir(parents=True, exist_ok=True)
     (output / "result.json").write_text(
         json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
@@ -64,6 +128,7 @@ def _save_debug(output: Path, after_color: np.ndarray, result: dict, artifacts) 
         artifacts.image_change_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
     cv2.drawContours(overlay, contours, -1, (0, 255, 255), 3)
+    _draw_pose_axes(overlay, result, manifest)
     pose = result["pose_4dof"]
     measured = result["measured_size_m"]
     lines = [
@@ -95,7 +160,13 @@ def main() -> int:
         min_change_area_m2=args.min_change_area,
         roi_margin_m=args.roi_margin,
     )
-    _save_debug(args.output.expanduser().resolve(), after.display_color_bgr, result, artifacts)
+    _save_debug(
+        args.output.expanduser().resolve(),
+        after.display_color_bgr,
+        result,
+        artifacts,
+        after.manifest,
+    )
 
     pose = result["pose_4dof"]
     measured = result["measured_size_m"]
@@ -128,4 +199,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

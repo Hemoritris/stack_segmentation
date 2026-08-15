@@ -144,7 +144,10 @@ cd /home/han/文档/segmentation/stack_seg
 
 程序对前后各 30 帧深度取像素中值，自动定位最大的新增深度区域，构建局部世界高度图，
 拟合顶面和固定尺寸矩形，最终输出 `slamware_map` 下的 `(x, y, z, yaw)`。结果保存在
-`record/real_result/result.json`，`overlay.png` 显示图像变化区域及估计结果。
+`record/real_result/result.json`，`overlay.png` 显示图像变化区域及估计结果。yaw 定义为箱体
+长边相对世界 `+X` 轴、绕世界 `+Z` 轴逆时针的角度；箱体具有 180° 对称性，因此结果统一
+到 `[-90°, 90°)`。叠加图中蓝色为世界 `+X`，红色为箱体长轴/yaw，绿色为短轴，紫色为
+固定尺寸顶面轮廓，青色点为箱体中心。
 
 当前外参只适用于地图 SHA256
 `b3cb8f4e94190f047eb447bd8adcf07d730efce8a1245d4ed9814bbe70502a29` 和当前固定相机安装

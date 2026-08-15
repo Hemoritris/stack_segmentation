@@ -4,6 +4,7 @@ import numpy as np
 from box_perception.real_pipeline import (
     estimate_box_from_world_clouds,
     normalize_box_yaw_deg,
+    project_world_points_to_image,
 )
 
 
@@ -46,3 +47,13 @@ def test_box_yaw_normalization_has_180_degree_symmetry():
     assert normalize_box_yaw_deg(-32.5) == -32.5
     assert normalize_box_yaw_deg(327.5) == -32.5
 
+
+def test_world_point_projection_uses_world_t_camera_convention():
+    k = np.array([[100.0, 0.0, 320.0], [0.0, 100.0, 240.0], [0.0, 0.0, 1.0]])
+    pixels = project_world_points_to_image(
+        np.array([[0.0, 0.0, 1.0], [0.1, -0.2, 1.0], [0.0, 0.0, -1.0]]),
+        np.eye(4),
+        k,
+    )
+    np.testing.assert_allclose(pixels[:2], [[320.0, 240.0], [330.0, 220.0]])
+    assert np.isnan(pixels[2]).all()

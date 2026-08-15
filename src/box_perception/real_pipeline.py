@@ -121,6 +121,43 @@ def normalize_box_yaw_deg(yaw_deg: float) -> float:
     return float((yaw_deg + 90.0) % 180.0 - 90.0)
 
 
+def project_world_points_to_image(
+    points_world: np.ndarray,
+    world_t_camera: np.ndarray,
+    camera_matrix: np.ndarray,
+    distortion: np.ndarray | None = None,
+) -> np.ndarray:
+    """Project world-frame XYZ points into the original distorted color image.
+
+    Points behind the optical camera are returned as ``[nan, nan]``.
+    ``world_t_camera`` follows the project convention
+    ``P_world = world_T_camera @ P_camera``.
+    """
+    points = np.asarray(points_world, dtype=np.float64)
+    transform = np.asarray(world_t_camera, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("points_world must have shape (N, 3)")
+    if transform.shape != (4, 4):
+        raise ValueError("world_t_camera must have shape (4, 4)")
+    camera_t_world = np.linalg.inv(transform)
+    homogeneous = np.column_stack([points, np.ones(len(points), dtype=np.float64)])
+    points_camera = (homogeneous @ camera_t_world.T)[:, :3]
+    visible = points_camera[:, 2] > 1e-6
+    pixels = np.full((len(points), 2), np.nan, dtype=np.float64)
+    if np.any(visible):
+        k = np.asarray(camera_matrix, dtype=np.float64).reshape(3, 3)
+        d = np.asarray([] if distortion is None else distortion, dtype=np.float64).reshape(-1)
+        projected, _ = cv2.projectPoints(
+            points_camera[visible],
+            np.zeros(3, dtype=np.float64),
+            np.zeros(3, dtype=np.float64),
+            k,
+            d if len(d) else None,
+        )
+        pixels[visible] = projected.reshape(-1, 2)
+    return pixels
+
+
 def estimate_box_from_world_clouds(
     points_before: np.ndarray,
     points_after: np.ndarray,
@@ -187,6 +224,14 @@ def estimate_box_from_world_clouds(
             "y_m": y,
             "z_m": z_center,
             "yaw_deg": yaw_deg,
+        },
+        "yaw_convention": {
+            "reference_frame": "world",
+            "axis": "box_length_axis",
+            "zero_direction": "world_+X",
+            "positive_direction": "counterclockwise_about_world_+Z",
+            "range_deg": "[-90, 90)",
+            "symmetry_deg": 180,
         },
         "box_size_prior_m": {"length": length, "width": width, "height": expected_height},
         "measured_size_m": {
@@ -291,6 +336,7 @@ def run_recorded_real_pipeline(
         min_change_area_m2=min_change_area_m2,
     )
     result["frame"] = str(after.manifest["world_frame"])
+    result["yaw_convention"]["reference_frame"] = result["frame"]
     result["recordings"] = {"before": str(before.root), "after": str(after.root)}
     result["map_sha256"] = str(after.manifest["map_sha256"])
     artifacts = RealPipelineArtifacts(
@@ -302,4 +348,3 @@ def run_recorded_real_pipeline(
         top_points_world=artifacts.top_points_world,
     )
     return result, artifacts
-
