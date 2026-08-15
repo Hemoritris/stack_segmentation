@@ -1,32 +1,57 @@
-# L515 相机与标定配置。数值均为占位示例，请以实际标定结果替换。
+# 固定 L515 真机 RGB-D 与世界外参配置。
+# 对齐深度与彩色图均为 1280x720，反投影必须使用 color 内参。
 camera:
-  model: "L515"
-  color_width: 1920
-  color_height: 1080
+  model: L515
+  serial: f1180517
+  firmware_observed: 1.5.4.1
+  color_width: 1280
+  color_height: 720
   color_fps: 30
-  depth_width: 1280
-  depth_height: 720
+  native_depth_width: 1024
+  native_depth_height: 768
   depth_fps: 30
+  depth_integer_scale_m: 0.001
+
+ros:
+  color_topic: /fixed_l515/color/image_raw
+  aligned_depth_topic: /fixed_l515/aligned_depth_to_color/image_raw
+  camera_info_topic: /fixed_l515/color/camera_info
+  max_pair_offset_s: 0.05
+  intrinsics_tolerance: 0.001
 
 intrinsics:
-  depth:
-    fx: 0.0
-    fy: 0.0
-    cx: 0.0
-    cy: 0.0
-    distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
+  # 厂家 1280x720 彩色内参；也用于 aligned_depth_to_color。
   color:
-    fx: 0.0
-    fy: 0.0
-    cx: 0.0
-    cy: 0.0
+    width: 1280
+    height: 720
+    frame_id: fixed_l515_color_optical_frame
+    distortion_model: plumb_bob
+    k:
+      - [902.162109375, 0.0, 649.779541015625]
+      - [0.0, 902.0294799804688, 357.5139465332031]
+      - [0.0, 0.0, 1.0]
+    distortion:
+      - 0.14151985943317413
+      - -0.46739184856414795
+      - 0.00015294917102437466
+      - -0.00033097699633799493
+      - 0.41376933455467224
+  # 厂家原生 1024x768 深度内参，仅用于身份核对；对齐深度不可使用这一组 K。
+  depth_native:
+    width: 1024
+    height: 768
+    frame_id: fixed_l515_depth_optical_frame
+    distortion_model: none
+    k:
+      - [730.890625, 0.0, 499.36328125]
+      - [0.0, 733.3515625, 397.44921875]
+      - [0.0, 0.0, 1.0]
     distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
 
 extrinsics:
-  # 相机 -> 世界 的 4x4 齐次变换（行优先）。示例为单位阵，需替换为标定结果。
-  T_cam_world:
-    - [1.0, 0.0, 0.0, 0.0]
-    - [0.0, 1.0, 0.0, 0.0]
-    - [0.0, 0.0, 1.0, 0.0]
-    - [0.0, 0.0, 0.0, 1.0]
-
+  # 相对本文件解析；本机和 x86 的同级 two_camera 目录均可使用。
+  result_json: ../../two_camera/data/results/fixed_l515_capture_20260814_map2/fixed_l515_world_extrinsics_filtered.json
+  transform_key: slamware_map_T_fixed_l515_color_optical_frame
+  world_frame: slamware_map
+  camera_frame: fixed_l515_color_optical_frame
+  expected_map_sha256: b3cb8f4e94190f047eb447bd8adcf07d730efce8a1245d4ed9814bbe70502a29

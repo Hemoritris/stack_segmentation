@@ -90,7 +90,7 @@ V3\ 多尺寸识别
 ### 基础阶段
 
 - [x] **P0 固定 L515 内外参与 World 外参标定**
-- [ ] **M0 RGB-D 读取、对齐、点云生成与 World 坐标数据链路**
+- [ ] **M0 RGB-D 读取、对齐、点云生成与 World 坐标数据链路**（代码与离线测试完成，待真机验收）
 - [ ] **M1 YOLO-Seg 挂顶多箱场景验证**
 
 ### V1：固定尺寸新箱 4DoF
@@ -164,6 +164,40 @@ yaw = 绕 +Z
 ---
 
 ## 3.2 RGB-D 基础模块
+
+当前实现采用 ROS 2 `realsense2_camera` 输出，而不是在 Python 中再次打开 USB：
+
+```text
+/fixed_l515/color/image_raw
+/fixed_l515/color/camera_info
+/fixed_l515/aligned_depth_to_color/image_raw
+```
+
+固定 L515 原生深度为 `1024x768`，驱动将其对齐到 `1280x720` 彩色图。对齐后的深度必须使用
+彩色相机 K/D 反投影，不能使用原生深度 K。实时 CameraInfo 会与厂家参数逐项比较；世界外参
+从以下冻结结果加载并校验地图哈希：
+
+```text
+../two_camera/data/results/fixed_l515_capture_20260814_map2/
+  fixed_l515_world_extrinsics_filtered.json
+```
+
+转换链为：
+
+```text
+depth pixel + color K/D
+  -> P_fixed_l515_color_optical_frame
+  -> slamware_map_T_fixed_l515_color_optical_frame
+  -> P_slamware_map
+```
+
+实现位置：
+
+- `camera/calibration.py`：厂家内参、过滤版世界外参、地图/Frame 校验；
+- `camera/ros_rgbd.py`：ROS 彩色/对齐深度时间配对和米制深度解码；
+- `geometry/pointcloud.py`：带畸变处理的对齐深度反投影；
+- `scripts/check_real_rgbd.py`：一帧真机闭环检查；
+- `scripts/record_rgbd.py`：真实 Before/After 数据录制。
 
 建议首先完成以下模块：
 

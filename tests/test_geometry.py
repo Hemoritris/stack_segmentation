@@ -1,6 +1,7 @@
 import numpy as np
 
 from box_perception.geometry.pointcloud import (
+    aligned_depth_to_pointcloud,
     depth_to_pointcloud,
     masked_depth_to_pointcloud,
 )
@@ -48,3 +49,10 @@ def test_masked_depth_to_pointcloud():
     assert pts.shape == (2, 3)
     assert np.allclose(pts, expected, atol=1e-6)
 
+
+def test_aligned_depth_uses_color_intrinsics():
+    depth = np.full((3, 3), np.nan, dtype=np.float32)
+    depth[1, 2] = 2.0
+    k = np.array([[100.0, 0.0, 1.0], [0.0, 100.0, 1.0], [0.0, 0.0, 1.0]])
+    points = aligned_depth_to_pointcloud(depth, k, np.zeros(5))
+    np.testing.assert_allclose(points, [[0.02, 0.0, 2.0]], atol=1e-9)

@@ -53,6 +53,75 @@ python -m pip install -e ".[viz]"
 
 `pyrealsense2` 与 `ultralytics` 依赖具体平台与加速库（CUDA / TensorRT），建议按目标部署机（如 Orin）单独确认版本，不要盲目升级。
 
+## 固定 L515 真机 RGB-D 链路
+
+真机链路复用现有 ROS 2 RealSense 驱动，不再由 Python 直接占用 USB。当前配置固定为：
+
+- 彩色：`1280x720@30`；
+- 原生深度：`1024x768@30`；
+- 感知输入：对齐到彩色图的 `1280x720` 深度；
+- 对齐深度反投影使用厂家彩色 K/D；
+- 世界外参读取 `two_camera` 当前 map2 的 `_filtered.json`，并校验地图 SHA256；
+- 输出世界坐标系：`slamware_map`。
+
+本机连接固定 L515，终端 1 启动 RGB-D 驱动：
+
+```bash
+cd /home/han/文档/segmentation/stack_seg
+./scripts/start_fixed_l515_rgbd.sh
+```
+
+该脚本会停止同名的标定彩色-only 驱动，避免两个进程争抢 L515。它应发布：
+
+```text
+/fixed_l515/color/image_raw
+/fixed_l515/color/camera_info
+/fixed_l515/aligned_depth_to_color/image_raw
+```
+
+若输出 `L515 is not present` 或驱动出现连续 `No such device`，说明设备已从 USB 总线掉线。
+停止驱动、物理重新插拔 L515、等待约 3 秒后再启动；不要同时启动 `two_camera` 的
+`start_fixed_l515.sh`。
+
+终端 2 检查一帧完整链路：
+
+```bash
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file:///home/han/文档/segmentation/yp2orin/arm_control/cyclonedds_local.xml
+
+cd /home/han/文档/segmentation/stack_seg
+PYTHONPATH=src python3 scripts/check_real_rgbd.py \
+  --output record/rgbd_preflight
+```
+
+程序会严格检查实时 CameraInfo 是否仍为标定时的 `1280x720`、K/D 和
+`fixed_l515_color_optical_frame`，随后完成：
+
+```text
+aligned depth [m]
+→ 去畸变反投影到 fixed_l515_color_optical_frame
+→ 乘 slamware_map_T_fixed_l515_color_optical_frame
+→ slamware_map 世界点云
+```
+
+连续录制真实 RGB-D 数据：
+
+```bash
+PYTHONPATH=src python3 scripts/record_rgbd.py \
+  --output-dir record/before \
+  --frames 30 \
+  --interval 0.2
+```
+
+每帧保存无损彩色 PNG、米制对齐深度 NPY 和时间戳；`manifest.json` 同时冻结内参、外参、
+地图哈希和坐标系。`record/` 已被 Git 忽略。
+
+当前外参只适用于地图 SHA256
+`b3cb8f4e94190f047eb447bd8adcf07d730efce8a1245d4ed9814bbe70502a29` 和当前固定相机安装
+位置。地图或相机移动后，参数加载会失败或必须重新标定，不能直接修改配置绕过检查。
+
 ## 无相机自测
 
 在相机未安装 / 未标定时，可用合成场景验证 M2~M8 的几何链路：
@@ -79,4 +148,6 @@ python -m pytest
 
 ## 当前状态
 
-V1 开发中。模块完成度与验收项以 `rgbd_box_4dof_stack_development_plan.md` 中的 checklist 为准。
+V1 开发中。M0 的 ROS RGB-D 读取、内外参加载、对齐深度反投影和世界点云代码已经完成，
+待固定 L515 真机运行验收；M1 YOLO-Seg 和 M9 多帧稳定仍未实现。模块完成度与验收项以
+`rgbd_box_4dof_stack_development_plan.md` 中的 checklist 为准。
