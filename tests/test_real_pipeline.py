@@ -4,6 +4,8 @@ import numpy as np
 from box_perception.real_pipeline import (
     estimate_box_from_world_clouds,
     normalize_box_yaw_deg,
+    pose_4dof_reference_to_world,
+    pose_4dof_world_to_reference,
     project_world_points_to_image,
 )
 
@@ -57,3 +59,15 @@ def test_world_point_projection_uses_world_t_camera_convention():
     )
     np.testing.assert_allclose(pixels[:2], [[320.0, 240.0], [330.0, 220.0]])
     assert np.isnan(pixels[2]).all()
+
+
+def test_reference_pose_transform_round_trip():
+    tray_world = {"x_m": 1.2, "y_m": -0.7, "z_m": 0.3, "yaw_deg": 30.0}
+    box_in_tray = {"x_m": 0.2, "y_m": -0.1, "z_m": 0.15, "yaw_deg": 20.0}
+    box_world = pose_4dof_reference_to_world(box_in_tray, tray_world)
+    recovered = pose_4dof_world_to_reference(box_world, tray_world)
+    np.testing.assert_allclose(
+        [recovered[key] for key in ("x_m", "y_m", "z_m", "yaw_deg")],
+        [box_in_tray[key] for key in ("x_m", "y_m", "z_m", "yaw_deg")],
+        atol=1e-9,
+    )

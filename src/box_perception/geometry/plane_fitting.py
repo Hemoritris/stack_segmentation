@@ -10,7 +10,9 @@ from ..core.types import BoxTopPlane
 def _fit_plane_ls(points: np.ndarray) -> tuple[np.ndarray, float]:
     """最小二乘拟合平面，返回 (单位法向量, d)，满足 n·p + d = 0。"""
     centroid = points.mean(axis=0)
-    _, _, vh = np.linalg.svd(points - centroid)
+    # ``full_matrices=True`` would allocate an N x N matrix for a large plane.
+    # Only the three right-singular vectors are needed here.
+    _, _, vh = np.linalg.svd(points - centroid, full_matrices=False)
     normal = vh[-1]
     if normal[2] < 0:
         normal = -normal
@@ -70,4 +72,3 @@ def fit_top_plane(
     rmse = float(np.sqrt(np.mean(dist**2)))
     height = float(np.median(inlier_pts[:, 2]))
     return BoxTopPlane(normal=normal, height=height, points=inlier_pts, plane_rmse=rmse)
-

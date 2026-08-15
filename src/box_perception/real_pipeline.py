@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ from .geometry.box_optimizer import BoxOptimizer
 from .geometry.plane_fitting import fit_top_plane, is_horizontal
 from .geometry.pointcloud import aligned_depth_to_pointcloud
 from .geometry.rectangle_init import fit_min_area_rect
+from .geometry.tray_detection import TrayDetectionArtifacts, detect_tray_from_depth
 from .temporal.change_detector import detect_change
 from .temporal.height_map import HeightMap
 
@@ -31,11 +33,13 @@ class RecordedRGBD:
 @dataclass(frozen=True)
 class RealPipelineArtifacts:
     image_change_mask: np.ndarray
+    tray_image_mask: np.ndarray
     height_before: np.ndarray
     height_after: np.ndarray
     world_change_mask: np.ndarray
     world_roi: tuple[tuple[float, float], tuple[float, float]]
     top_points_world: np.ndarray
+    tray_top_points_world: np.ndarray
 
 
 def _median_depth(depths: list[np.ndarray]) -> np.ndarray:
@@ -119,6 +123,42 @@ def _largest_component(mask: np.ndarray, min_area: int) -> np.ndarray:
 def normalize_box_yaw_deg(yaw_deg: float) -> float:
     """Normalize a rectangular box's 180-degree-symmetric yaw to [-90, 90)."""
     return float((yaw_deg + 90.0) % 180.0 - 90.0)
+
+
+def pose_4dof_world_to_reference(
+    pose_world: dict[str, float], reference_world: dict[str, float]
+) -> dict[str, float]:
+    """Express a world-frame ``x, y, z, yaw`` pose in a planar reference frame."""
+    yaw_reference = np.deg2rad(float(reference_world["yaw_deg"]))
+    dx = float(pose_world["x_m"]) - float(reference_world["x_m"])
+    dy = float(pose_world["y_m"]) - float(reference_world["y_m"])
+    c, s = np.cos(yaw_reference), np.sin(yaw_reference)
+    return {
+        "x_m": float(c * dx + s * dy),
+        "y_m": float(-s * dx + c * dy),
+        "z_m": float(pose_world["z_m"]) - float(reference_world["z_m"]),
+        "yaw_deg": normalize_box_yaw_deg(
+            float(pose_world["yaw_deg"]) - float(reference_world["yaw_deg"])
+        ),
+    }
+
+
+def pose_4dof_reference_to_world(
+    pose_reference: dict[str, float], reference_world: dict[str, float]
+) -> dict[str, float]:
+    """Transform a planar-reference ``x, y, z, yaw`` pose back to world."""
+    yaw_reference = np.deg2rad(float(reference_world["yaw_deg"]))
+    c, s = np.cos(yaw_reference), np.sin(yaw_reference)
+    x_local = float(pose_reference["x_m"])
+    y_local = float(pose_reference["y_m"])
+    return {
+        "x_m": float(reference_world["x_m"]) + c * x_local - s * y_local,
+        "y_m": float(reference_world["y_m"]) + s * x_local + c * y_local,
+        "z_m": float(reference_world["z_m"]) + float(pose_reference["z_m"]),
+        "yaw_deg": normalize_box_yaw_deg(
+            float(reference_world["yaw_deg"]) + float(pose_reference["yaw_deg"])
+        ),
+    }
 
 
 def project_world_points_to_image(
@@ -264,11 +304,13 @@ def estimate_box_from_world_clouds(
     }
     artifacts = RealPipelineArtifacts(
         image_change_mask=np.empty((0, 0), dtype=bool),
+        tray_image_mask=np.empty((0, 0), dtype=bool),
         height_before=h_before,
         height_after=h_after,
         world_change_mask=component,
         world_roi=roi,
         top_points_world=plane.points,
+        tray_top_points_world=np.empty((0, 3), dtype=np.float64),
     )
     return result, artifacts
 
@@ -284,10 +326,52 @@ def run_recorded_real_pipeline(
     min_height_change_m: float = 0.05,
     min_change_area_m2: float = 0.02,
     roi_margin_m: float = 0.15,
+    tray_min_elevation_m: float = 0.10,
+    tray_max_elevation_m: float = 0.55,
+    tray_min_area_pixels: int = 5000,
+    tray_plane_distance_threshold_m: float = 0.008,
+    tray_reference: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], RealPipelineArtifacts]:
     validate_recording_pair(before, after)
     b = before.median_depth_m
     a = after.median_depth_m
+    intrinsics = after.manifest["intrinsics"]
+    k = np.asarray(intrinsics["k"], dtype=np.float64)
+    distortion = np.asarray(intrinsics["distortion"], dtype=np.float64)
+    world_t_camera = np.asarray(after.manifest["world_T_camera"], dtype=np.float64)
+
+    world_frame = str(after.manifest["world_frame"])
+    if tray_reference is None:
+        # The tray is deliberately detected first from the empty Before recording.
+        tray, tray_artifacts = detect_tray_from_depth(
+            b,
+            k,
+            distortion,
+            world_t_camera,
+            frame=world_frame,
+            min_elevation_m=tray_min_elevation_m,
+            max_elevation_m=tray_max_elevation_m,
+            min_area_pixels=tray_min_area_pixels,
+            plane_distance_threshold_m=tray_plane_distance_threshold_m,
+        )
+    else:
+        tray = copy.deepcopy(tray_reference)
+        if tray.get("frame") != world_frame:
+            raise ValueError(
+                f"frozen tray frame {tray.get('frame')!r} does not match {world_frame!r}"
+            )
+        pose_values = [
+            tray.get("pose_4dof", {}).get(key)
+            for key in ("x_m", "y_m", "z_m", "yaw_deg")
+        ]
+        if not np.all(np.isfinite(np.asarray(pose_values, dtype=np.float64))):
+            raise ValueError("frozen tray reference has an invalid pose_4dof")
+        tray_artifacts = TrayDetectionArtifacts(
+            image_mask=np.zeros(b.shape, dtype=bool),
+            top_points_world=np.empty((0, 3), dtype=np.float64),
+            world_z_image=np.empty((0, 0), dtype=np.float64),
+        )
+
     valid = np.isfinite(b) & np.isfinite(a)
     image_change = valid & ((b - a) >= min_depth_change_m)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -295,10 +379,6 @@ def run_recorded_real_pipeline(
     image_change = cv2.morphologyEx(image_change, cv2.MORPH_OPEN, kernel)
     image_component = _largest_component(image_change, min_area=500)
 
-    intrinsics = after.manifest["intrinsics"]
-    k = np.asarray(intrinsics["k"], dtype=np.float64)
-    distortion = np.asarray(intrinsics["distortion"], dtype=np.float64)
-    world_t_camera = np.asarray(after.manifest["world_T_camera"], dtype=np.float64)
     changed_camera = aligned_depth_to_pointcloud(
         a, k, distortion, mask=image_component, min_depth_m=0.2, max_depth_m=6.0
     )
@@ -337,14 +417,25 @@ def run_recorded_real_pipeline(
     )
     result["frame"] = str(after.manifest["world_frame"])
     result["yaw_convention"]["reference_frame"] = result["frame"]
+    box_in_tray = pose_4dof_world_to_reference(result["pose_4dof"], tray["pose_4dof"])
+    box_in_tray["bottom_z_m"] = float(box_in_tray["z_m"] - box_size[2] / 2.0)
+    result["tray"] = tray
+    result["box_pose_in_tray_4dof"] = box_in_tray
+    result["placement_reference"] = {
+        "frame": "tray",
+        "origin": "tray_top_surface_center",
+        "note": "Use tray-relative x/y/z/yaw targets, then transform them with tray pose_4dof",
+    }
     result["recordings"] = {"before": str(before.root), "after": str(after.root)}
     result["map_sha256"] = str(after.manifest["map_sha256"])
     artifacts = RealPipelineArtifacts(
         image_change_mask=image_component,
+        tray_image_mask=tray_artifacts.image_mask,
         height_before=artifacts.height_before,
         height_after=artifacts.height_after,
         world_change_mask=artifacts.world_change_mask,
         world_roi=artifacts.world_roi,
         top_points_world=artifacts.top_points_world,
+        tray_top_points_world=tray_artifacts.top_points_world,
     )
     return result, artifacts

@@ -91,6 +91,7 @@ V3\ 多尺寸识别
 
 - [x] **P0 固定 L515 内外参与 World 外参标定**
 - [x] **M0 RGB-D 读取、对齐、点云生成与 World 坐标数据链路**（固定 L515 真机验收通过）
+- [x] **P1 空托盘顶面识别、世界 4DoF 与托盘局部参考系**
 - [ ] **M1 YOLO-Seg 挂顶多箱场景验证**
 
 ### V1：固定尺寸新箱 4DoF
@@ -149,21 +150,64 @@ P_C
 P_W={}^WT_CP_C
 \]
 
-建议统一世界坐标定义：
+世界坐标必须保持 Slamware 地图定义，不能因为托盘方向而旋转：
 
 ```text
-World:
-X = 托盘长方向
-Y = 托盘宽方向
-Z = 向上
-yaw = 绕 +Z
+World / slamware_map:
+X, Y = 地图固定方向
+Z = 世界向上
+yaw = 长边相对世界 +X、绕世界 +Z 的角度
 ```
 
 所有后续点云和箱体几何运算统一在 `world` 坐标系下进行。
 
 ---
 
-## 3.2 RGB-D 基础模块
+## 3.2 托盘局部参考系
+
+第一只箱子放置前，从空托盘深度图中识别高于地面的最大水平连通平面，建立：
+
+```text
+Tray:
+origin = 托盘顶面中心
++X = 托盘测量长边
++Y = 托盘测量短边
++Z = world +Z
+```
+
+若托盘世界位姿为 \((x_t,y_t,z_t,\psi_t)\)，箱体世界位姿为
+\((x_b,y_b,z_b,\psi_b)\)，则箱体相对托盘：
+
+\[
+\begin{bmatrix}x_b^T\\y_b^T\end{bmatrix}
+=R(-\psi_t)
+\begin{bmatrix}x_b-x_t\\y_b-y_t\end{bmatrix},\quad
+z_b^T=z_b-z_t,\quad
+\psi_b^T=\operatorname{wrap}_{180}(\psi_b-\psi_t)
+\]
+
+放置规划反向使用 \(R(\psi_t)\) 转回 `slamware_map`。托盘位姿在首次识别后冻结，后续箱体
+遮挡托盘时不重复估计；若托盘被移动，则必须清空后重新识别。
+
+当前离线操作顺序：
+
+```bash
+# 1. 仅使用空托盘 Before，冻结托盘参考系
+/usr/bin/python3 scripts/run_real_pipeline.py \
+  --before record/before --tray-only --output record/tray_reference
+
+# 2. 后续箱体识别加载同一个托盘参考系
+/usr/bin/python3 scripts/run_real_pipeline.py \
+  --before record/before \
+  --after record/after \
+  --tray-reference record/tray_reference/tray_reference.json \
+  --box-size 0.40 0.30 0.30 \
+  --output record/real_result
+```
+
+---
+
+## 3.3 RGB-D 基础模块
 
 当前实现采用 ROS 2 `realsense2_camera` 输出，而不是在 Python 中再次打开 USB：
 
@@ -196,6 +240,7 @@ depth pixel + color K/D
 - `camera/calibration.py`：厂家内参、过滤版世界外参、地图/Frame 校验；
 - `camera/ros_rgbd.py`：ROS 彩色/对齐深度时间配对和米制深度解码；
 - `geometry/pointcloud.py`：带畸变处理的对齐深度反投影；
+- `geometry/tray_detection.py`：地面/托盘分离、托盘顶面与世界 4DoF；
 - `real_pipeline.py`：真实 Before/After 中值深度、变化区域、Height Map、顶面与 4DoF 串联；
 - `scripts/check_real_rgbd.py`：一帧真机闭环检查；
 - `scripts/record_rgbd.py`：真实 Before/After 数据录制；
@@ -1142,6 +1187,7 @@ Layer-based Map
 下面这部分可直接作为开发过程中的主进度清单：
 
 - [x] **M0** RGB-D 读取、RGB/Depth 对齐、点云与 World 坐标
+- [x] **P1** 空托盘顶面、世界 4DoF 与托盘局部放置参考系
 - [ ] **M1** YOLO-Seg 实际挂顶多箱场景验证
 - [x] **M2** World Height Map
 - [x] **M3** Before / After 变化检测

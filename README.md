@@ -130,24 +130,58 @@ aligned depth [m]
 每帧保存无损彩色 PNG、米制对齐深度 NPY 和时间戳；`manifest.json` 同时冻结内参、外参、
 地图哈希和坐标系。`record/` 已被 Git 忽略。
 
-采集完 `record/before` 和 `record/after` 后，对当前 `40 × 30 × 30 cm` 箱体运行真实数据
-离线 pipeline：
+空托盘采集完成后，必须先识别并冻结托盘参考系：
+
+```bash
+cd /home/han/文档/segmentation/stack_seg
+/usr/bin/python3 scripts/run_real_pipeline.py \
+  --before record/before \
+  --tray-only \
+  --output record/tray_reference
+```
+
+先检查 `record/tray_reference/tray_overlay.png`，确认托盘轮廓、中心和 `tray +X/+Y` 正确。
+确认后，`tray_reference.json` 作为当前托盘和当前地图的冻结参考；文件中带有地图 SHA256，
+地图不一致时程序会拒绝加载。
+
+采集完 `record/after` 后，对当前 `40 × 30 × 30 cm` 箱体运行真实数据离线 pipeline：
 
 ```bash
 cd /home/han/文档/segmentation/stack_seg
 /usr/bin/python3 scripts/run_real_pipeline.py \
   --before record/before \
   --after record/after \
+  --tray-reference record/tray_reference/tray_reference.json \
   --box-size 0.40 0.30 0.30 \
   --output record/real_result
 ```
 
-程序对前后各 30 帧深度取像素中值，自动定位最大的新增深度区域，构建局部世界高度图，
-拟合顶面和固定尺寸矩形，最终输出 `slamware_map` 下的 `(x, y, z, yaw)`。结果保存在
+程序首先从 `before` 深度中分离高于地面的最大水平连通平面，得到托盘在 `slamware_map`
+下的 4DoF；随后对前后各 30 帧深度取像素中值，自动定位最大的新增深度区域，构建局部
+世界高度图，拟合箱体顶面和固定尺寸矩形，最终同时输出箱体世界 4DoF 与托盘局部 4DoF。
+结果保存在
 `record/real_result/result.json`，`overlay.png` 显示图像变化区域及估计结果。yaw 定义为箱体
 长边相对世界 `+X` 轴、绕世界 `+Z` 轴逆时针的角度；箱体具有 180° 对称性，因此结果统一
 到 `[-90°, 90°)`。叠加图中蓝色为世界 `+X`，红色为箱体长轴/yaw，绿色为短轴，紫色为
 固定尺寸顶面轮廓，青色点为箱体中心。
+
+托盘局部坐标系原点位于托盘顶面中心，`+X` 沿检测到的长边，`+Y` 沿短边，`+Z` 与世界
+向上一致。`result.json` 中的 `tray.pose_4dof` 是托盘世界位姿，
+`box_pose_in_tray_4dof` 是箱体相对托盘的位姿，其中 `z_m` 是箱体中心相对托盘顶面的高度，
+`bottom_z_m` 是箱底与托盘顶面的间隙。后续放置规划应先在托盘系指定目标，再通过
+`pose_4dof_reference_to_world()` 转换到 `slamware_map`，不能直接把托盘局部 XY 当作世界 XY。
+
+调试输出还包括：
+
+- `tray_overlay.png`：空托盘识别轮廓、托盘坐标轴和世界 `+X`；
+- `tray_image_mask.png`：托盘图像掩膜；
+- `tray_top_points_world.npy`：托盘顶面世界点云；
+- `overlay.png`：托盘轮廓、箱体轮廓、两个位姿及箱体相对托盘结果。
+
+不提供 `--tray-reference` 时，完整脚本会为兼容调试流程而从 `before` 自动检测托盘；正式连续
+堆叠应始终使用冻结文件。托盘接近正方形时，单靠外接矩形可能发生 90° 轴交换。应检查
+`tray.quality.yaw_stable_from_shape` 和 `axis_ratio`；开始堆叠后托盘会被遮挡，因此应在第一只
+箱子识别前检测一次并冻结该次托盘位姿，除非确认托盘发生移动。
 
 当前外参只适用于地图 SHA256
 `b3cb8f4e94190f047eb447bd8adcf07d730efce8a1245d4ed9814bbe70502a29` 和当前固定相机安装
@@ -182,6 +216,10 @@ python -m pytest
 V1 开发中。M0 已通过固定 L515 真机验收；M2、M3、M5～M8 已使用一组真实 Before/After
 数据完成单个新增箱体闭环验证。当前 `40 × 30 × 30 cm` 箱体估计尺寸约为
 `39.2 × 30.6 × 31.1 cm`，结果位于 `record/real_result/`（该目录不纳入 Git）。
+
+托盘预识别与托盘局部放置参考系也已通过同一组真机数据验证：托盘顶面约
+`0.922 × 0.885 m`，世界 yaw 约 `-88.02°`，箱体相对托盘中心约为
+`(-0.175, 0.076) m`、相对 yaw 约 `55.67°`。
 
 当前真实数据 baseline 使用“最大新增连通区域”选择单箱，M1 YOLO-Seg、M4 多实例关联、
 M9 多帧稳定与置信度仍未实现，因此尚不能视为复杂多箱场景下的 V1 最终验收。模块完成度
