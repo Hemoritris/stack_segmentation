@@ -90,18 +90,18 @@ V3\ 多尺寸识别
 ### 基础阶段
 
 - [x] **P0 固定 L515 内外参与 World 外参标定**
-- [ ] **M0 RGB-D 读取、对齐、点云生成与 World 坐标数据链路**（代码与离线测试完成，待真机验收）
+- [x] **M0 RGB-D 读取、对齐、点云生成与 World 坐标数据链路**（固定 L515 真机验收通过）
 - [ ] **M1 YOLO-Seg 挂顶多箱场景验证**
 
 ### V1：固定尺寸新箱 4DoF
 
-- [ ] **M2 World Height Map**
-- [ ] **M3 Before / After 深度时序变化检测**
+- [x] **M2 World Height Map**
+- [x] **M3 Before / After 深度时序变化检测**
 - [ ] **M4 Change Mask × YOLO 实例关联，识别新增箱子**
-- [ ] **M5 新箱 Mask + Depth → 单箱点云**
-- [ ] **M6 RANSAC 顶面提取**
-- [ ] **M7 minAreaRect 4DoF Baseline**
-- [ ] **M8 固定尺寸先验约束拟合**
+- [x] **M5 新箱 Mask + Depth → 单箱点云**（当前以最大新增连通区域代替 M4）
+- [x] **M6 RANSAC 顶面提取**
+- [x] **M7 minAreaRect 4DoF Baseline**
+- [x] **M8 固定尺寸先验约束拟合**
 - [ ] **M9 多帧稳定性判断与 Confidence**
 - [ ] **V1 验收：固定尺寸新箱 4DoF 精度达标**
 
@@ -196,8 +196,10 @@ depth pixel + color K/D
 - `camera/calibration.py`：厂家内参、过滤版世界外参、地图/Frame 校验；
 - `camera/ros_rgbd.py`：ROS 彩色/对齐深度时间配对和米制深度解码；
 - `geometry/pointcloud.py`：带畸变处理的对齐深度反投影；
+- `real_pipeline.py`：真实 Before/After 中值深度、变化区域、Height Map、顶面与 4DoF 串联；
 - `scripts/check_real_rgbd.py`：一帧真机闭环检查；
-- `scripts/record_rgbd.py`：真实 Before/After 数据录制。
+- `scripts/record_rgbd.py`：真实 Before/After 数据录制；
+- `scripts/run_real_pipeline.py`：离线运行真实数据链路并保存 JSON、掩膜和叠加图。
 
 建议首先完成以下模块：
 
@@ -1139,15 +1141,15 @@ Layer-based Map
 
 下面这部分可直接作为开发过程中的主进度清单：
 
-- [ ] **M0** RGB-D 读取、RGB/Depth 对齐、点云与 World 坐标
+- [x] **M0** RGB-D 读取、RGB/Depth 对齐、点云与 World 坐标
 - [ ] **M1** YOLO-Seg 实际挂顶多箱场景验证
-- [ ] **M2** World Height Map
-- [ ] **M3** Before / After 变化检测
+- [x] **M2** World Height Map
+- [x] **M3** Before / After 变化检测
 - [ ] **M4** Change Mask × YOLO → 新箱关联
-- [ ] **M5** 新箱 Mask → 单箱点云
-- [ ] **M6** RANSAC 顶面
-- [ ] **M7** minAreaRect baseline
-- [ ] **M8** 固定尺寸先验约束拟合
+- [x] **M5** 新箱 Mask → 单箱点云（暂用最大新增连通区域）
+- [x] **M6** RANSAC 顶面
+- [x] **M7** minAreaRect baseline
+- [x] **M8** 固定尺寸先验约束拟合
 - [ ] **M9** 多帧稳定 + Confidence
 - [ ] **V1 验收**
 

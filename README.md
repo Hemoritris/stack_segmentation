@@ -130,6 +130,22 @@ aligned depth [m]
 每帧保存无损彩色 PNG、米制对齐深度 NPY 和时间戳；`manifest.json` 同时冻结内参、外参、
 地图哈希和坐标系。`record/` 已被 Git 忽略。
 
+采集完 `record/before` 和 `record/after` 后，对当前 `40 × 30 × 30 cm` 箱体运行真实数据
+离线 pipeline：
+
+```bash
+cd /home/han/文档/segmentation/stack_seg
+/usr/bin/python3 scripts/run_real_pipeline.py \
+  --before record/before \
+  --after record/after \
+  --box-size 0.40 0.30 0.30 \
+  --output record/real_result
+```
+
+程序对前后各 30 帧深度取像素中值，自动定位最大的新增深度区域，构建局部世界高度图，
+拟合顶面和固定尺寸矩形，最终输出 `slamware_map` 下的 `(x, y, z, yaw)`。结果保存在
+`record/real_result/result.json`，`overlay.png` 显示图像变化区域及估计结果。
+
 当前外参只适用于地图 SHA256
 `b3cb8f4e94190f047eb447bd8adcf07d730efce8a1245d4ed9814bbe70502a29` 和当前固定相机安装
 位置。地图或相机移动后，参数加载会失败或必须重新标定，不能直接修改配置绕过检查。
@@ -160,6 +176,10 @@ python -m pytest
 
 ## 当前状态
 
-V1 开发中。M0 的 ROS RGB-D 读取、内外参加载、对齐深度反投影和世界点云代码已经完成，
-待固定 L515 真机运行验收；M1 YOLO-Seg 和 M9 多帧稳定仍未实现。模块完成度与验收项以
-`rgbd_box_4dof_stack_development_plan.md` 中的 checklist 为准。
+V1 开发中。M0 已通过固定 L515 真机验收；M2、M3、M5～M8 已使用一组真实 Before/After
+数据完成单个新增箱体闭环验证。当前 `40 × 30 × 30 cm` 箱体估计尺寸约为
+`39.2 × 30.6 × 31.1 cm`，结果位于 `record/real_result/`（该目录不纳入 Git）。
+
+当前真实数据 baseline 使用“最大新增连通区域”选择单箱，M1 YOLO-Seg、M4 多实例关联、
+M9 多帧稳定与置信度仍未实现，因此尚不能视为复杂多箱场景下的 V1 最终验收。模块完成度
+与验收项以 `rgbd_box_4dof_stack_development_plan.md` 中的 checklist 为准。
