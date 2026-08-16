@@ -41,8 +41,7 @@ class YOLOSegmentor:
             from ultralytics import YOLO
         except ImportError as exc:
             raise RuntimeError(
-                "未找到 ultralytics。请在包含模型依赖的 box-seg 环境中运行，"
-                "例如 /home/han/miniforge3/envs/box-seg/bin/python。"
+                "未找到 ultralytics。请在包含模型依赖的环境中运行（pip install ultralytics）。"
             ) from exc
 
         self.weights = str(weight_path)

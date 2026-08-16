@@ -675,7 +675,7 @@ class YOLOSegmentor:
             from ultralytics import YOLO
         except ImportError as exc:
             raise RuntimeError(
-                "未找到 ultralytics，请在包含模型依赖的环境中运行（如 /home/han/miniforge3/envs/box-seg）"
+                "未找到 ultralytics，请在包含模型依赖的环境中运行（pip install ultralytics）"
             ) from exc
         self.device = device
         self.conf = float(conf)

@@ -2,13 +2,16 @@
 # Start the physically connected L515 for stack_seg RGB-D perception.
 
 set -euo pipefail
-L515_ROS_PREFIX="/home/han/文档/segmentation/yp2orin/realsense-ros-l515-runtime/realsense2_camera"
-L515_SDK_PREFIX="/home/han/文档/segmentation/yp2orin/librealsense-l515-runtime"
-L515_ROS_DEPS="/home/han/文档/segmentation/yp2orin/realsense-ros-l515-deps/opt/ros/humble/lib"
+# L515 专用运行时（librealsense 2.54.2 + RealSense ROS 4.54.1）安装目录。
+# 默认指向本机 yp2orin 工程；其它机器用 L515_RUNTIME_DIR 覆盖即可。
+L515_RUNTIME_DIR="${L515_RUNTIME_DIR:-/home/han/文档/segmentation/yp2orin}"
+L515_ROS_PREFIX="${L515_RUNTIME_DIR}/realsense-ros-l515-runtime/realsense2_camera"
+L515_SDK_PREFIX="${L515_RUNTIME_DIR}/librealsense-l515-runtime"
+L515_ROS_DEPS="${L515_RUNTIME_DIR}/realsense-ros-l515-deps/opt/ros/humble/lib"
 
 set +u
 source /opt/ros/humble/setup.bash
-source /home/han/文档/segmentation/yp2orin/realsense-ros-l515-runtime/setup.sh
+source "${L515_RUNTIME_DIR}/realsense-ros-l515-runtime/setup.sh"
 set -u
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,7 +26,7 @@ export RS2_DISABLE_ERROR_POLLING=1
 export RS2_DISABLE_TEMPERATURE_POLLING=1
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
-export CYCLONEDDS_URI="${CYCLONEDDS_URI:-file:///home/han/文档/segmentation/yp2orin/arm_control/cyclonedds_local.xml}"
+export CYCLONEDDS_URI="${CYCLONEDDS_URI:-file://${ROOT_DIR}/config/cyclonedds_local.xml}"
 export ROS_LOG_DIR="${ROS_LOG_DIR:-/tmp/stack_seg_l515_logs}"
 mkdir -p "${ROS_LOG_DIR}"
 

@@ -49,8 +49,8 @@ intrinsics:
     distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
 
 extrinsics:
-  # 相对本文件解析；本机和 x86 的同级 two_camera 目录均可使用。
-  result_json: ../../two_camera/data/results/fixed_l515_capture_20260814_map2/fixed_l515_world_extrinsics_filtered.json
+  # 相对本文件（config/）解析；外参 JSON 已随仓库分发。
+  result_json: fixed_l515_world_extrinsics_filtered.json
   transform_key: slamware_map_T_fixed_l515_color_optical_frame
   world_frame: slamware_map
   camera_frame: fixed_l515_color_optical_frame

@@ -48,6 +48,10 @@ record/
 *.npz
 *.zip
 
+# 随仓库分发的 YOLO 权重（models/）例外，允许入库
+!models/
+!models/*.pt
+
 # Logs
 logs/
 *.log

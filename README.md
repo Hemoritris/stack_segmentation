@@ -103,10 +103,9 @@ stack_seg/
 
 ### 运行指令
 
-终端 1 启动固定 L515 驱动：
+终端 1 启动固定 L515 驱动（脚本内部已配置好 ROS / CycloneDDS 环境变量）：
 
 ```bash
-cd /home/han/文档/segmentation/stack_seg
 ./scripts/start_fixed_l515_rgbd.sh
 ```
 
@@ -114,23 +113,19 @@ cd /home/han/文档/segmentation/stack_seg
 
 ```bash
 source /opt/ros/humble/setup.bash
-export ROS_DOMAIN_ID=0
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-export CYCLONEDDS_URI=file:///home/han/文档/segmentation/yp2orin/arm_control/cyclonedds_local.xml
-
-cd /home/han/文档/segmentation/stack_seg
+cd /path/to/stack_seg
 
 # 模式 1：空托盘时更新托盘参考
-/home/han/venvs/stack-live/bin/python scripts/stack_box_mapper.py \
+python scripts/stack_box_mapper.py \
   --mode update_tray \
-  --yolo-weights /home/han/文档/segmentation/yolo_train/runs/fixed_l515_top_box_seg/fixed_l515_top_box_yolo26s_768/weights/best.pt \
+  --yolo-weights models/best.pt \
   --tray-reference record/tray_reference/tray_reference.json
 
 # 模式 2：建图（任意时刻打开）
-/home/han/venvs/stack-live/bin/python scripts/stack_box_mapper.py \
+python scripts/stack_box_mapper.py \
   --mode map_stack \
   --tray-reference record/tray_reference/tray_reference.json \
-  --yolo-weights /home/han/文档/segmentation/yolo_train/runs/fixed_l515_top_box_seg/fixed_l515_top_box_yolo26s_768/weights/best.pt \
+  --yolo-weights models/best.pt \
   --yolo-device 0 \
   --inference-hz 10 \
   --output record/stack_box_map
@@ -153,22 +148,40 @@ matplotlib 3D 窗口显示所有箱子（绿=活动层实测、蓝=冻结、橙=
 | `live_top_layer_tracker_test.py` | 顶层冻结 + 4DoF 跟踪测试（旧版） |
 | `view_stack_map_3d.py` | 独立 3D 查看器，监视 stack_map.json（旧版） |
 
+## 快速配置（首次部署）
+
+1. **系统依赖**：ROS 2 Humble（含 `rclpy`）、Python 3.10+、L515 专用运行时
+   （librealsense 2.54.2 + RealSense ROS 4.54.1，安装目录通过
+   `scripts/start_fixed_l515_rgbd.sh` 顶部的 `L515_RUNTIME_DIR` 指定）。
+
+2. **Python 依赖**（除 `rclpy` 外）：
+   ```bash
+   python -m pip install -e ".[viz]"    # 基础 + matplotlib + open3d
+   python -m pip install ultralytics    # YOLO-Seg
+   ```
+   实时脚本要求同一 Python 环境同时具备 `rclpy` + `ultralytics` + `matplotlib`（建议用 venv）。
+
+3. **相机标定**：内参、外参已随仓库分发（`config/camera.yaml` +
+   `config/fixed_l515_world_extrinsics_filtered.json`）。若更换相机或移动相机，需重新标定，
+   并更新 `config/camera.yaml`（相机 serial、`expected_map_sha256`）。
+
+4. **托盘参考**：首次运行前，在空托盘状态下执行模式 1，生成
+   `record/tray_reference/tray_reference.json`。
+
 ## 运行注意事项
 
-- **Python 环境**：正式版与实时脚本用 `/home/han/venvs/stack-live/bin/python`
-  （同时含 `rclpy`、`ultralytics`、`matplotlib`）。离线 pipeline 可用
-  `/home/han/miniforge3/envs/box-seg/bin/python`。
-- **ROS 环境变量**：运行前必须 `source /opt/ros/humble/setup.bash` 并 export
-  `ROS_DOMAIN_ID=0`、`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`、`CYCLONEDDS_URI`。
+- **ROS 环境**：运行前 `source /opt/ros/humble/setup.bash`；`start_fixed_l515_rgbd.sh` 会自动
+  export `ROS_DOMAIN_ID`、`RMW_IMPLEMENTATION`、`CYCLONEDDS_URI`（指向仓库内
+  `config/cyclonedds_local.xml`）。
 - **不要设置 `PYTHONPATH=src`**：会覆盖 ROS 2 的 Python 路径，导致 `rclpy` 无法导入；
   脚本会自行加载 `src`。
-- **L515 驱动**：`./scripts/start_fixed_l515_rgbd.sh` 固定使用专用 librealsense `2.54.2`；
-  物理重新插拔相机后需重启该脚本；不要用系统 `realsense-viewer`（2.58.3）启动这台 L515。
-- **托盘参考**：`record/tray_reference/tray_reference.json` 需在**空托盘**时用模式 1 生成；
-  文件带地图 SHA256，地图不一致时程序拒绝加载。
-- **`mpl_toolkits`**：`stack-live` 环境的 `mpl_toolkits` 曾因缺顶层 `__init__.py` 被系统旧版
-  namespace 劫持，正式版已在内部规避（`_preload_mplot3d`），无需手动处理。
-- **大文件不入库**：模型权重、录包、点云、图像、`record/` 数据均被 `.gitignore` 忽略。
+- **L515 驱动**：专用脚本固定使用 librealsense 2.54.2，物理重插相机后需重启；不要用系统
+  `realsense-viewer`（2.58.3）启动这台 L515。
+- **托盘参考**：需空托盘时生成；文件带地图 SHA256，地图不一致时拒绝加载。
+- **`mpl_toolkits`**：某些环境 `mpl_toolkits` 可能被系统旧版 namespace 劫持，正式版已在内部
+  规避（`_preload_mplot3d`），无需手动处理。
+- **YOLO 权重**：已随仓库分发于 `models/best.pt`；换模型时用 `--yolo-weights` 覆盖。
+- **大文件不入库**：录包、点云、图像、`record/` 运行数据均被 `.gitignore` 忽略。
 
 ## 开发约定
 
