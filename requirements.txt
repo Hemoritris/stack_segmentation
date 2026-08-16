@@ -1,0 +1,6 @@
+# Python 依赖（rclpy 除外，rclpy 随 ROS 2 Humble 安装）
+numpy
+opencv-python
+PyYAML
+ultralytics
+matplotlib
