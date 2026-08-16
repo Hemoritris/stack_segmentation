@@ -50,23 +50,29 @@ L515 RGB-D
 ## 代码结构
 
 ```text
-stack_seg/
+.
 ├── README.md
-├── requirements.txt                  # Python 依赖
-├── config/
-│   ├── camera.yaml                   # L515 内参、外参路径、ROS 话题
-│   ├── fixed_l515_world_extrinsics_filtered.json   # 世界外参（已随仓库分发）
-│   ├── fixed_l515_rgbd.yaml          # L515 驱动参数
-│   └── cyclonedds_local.xml          # CycloneDDS 配置
+├── LICENSE                            # MIT 许可
+├── requirements.txt                   # Python 依赖
+├── config/                            # 相机、外参、驱动与 DDS 配置
+│   ├── camera.yaml
+│   ├── fixed_l515_world_extrinsics_filtered.json
+│   ├── fixed_l515_rgbd.yaml
+│   └── cyclonedds_local.xml
 ├── models/
-│   └── best.pt                       # YOLO-Seg 权重（已随仓库分发）
+│   └── best.pt                        # YOLO-Seg 权重（已随仓库分发）
 └── scripts/
-    ├── stack_box_mapper.py           # 正式版垛堆建图（单文件，自包含）
-    └── start_fixed_l515_rgbd.sh      # 启动固定 L515 驱动
+    ├── stack_box_mapper.py            # 入口脚本（参数解析 + 两个模式主循环）
+    ├── stack_mapper/                  # 功能模块包
+    │   ├── config.py                  # 任务配置（箱型、层序、容差常量）
+    │   ├── types.py                   # 数据结构
+    │   ├── geometry.py                # 几何（反投影、顶面/矩形拟合、中值、投影）
+    │   ├── camera.py                  # 相机标定、ROS RGB-D 读取、坐标变换
+    │   ├── detect.py                  # 检测（YOLO、托盘、单箱 4DoF、深度兜底）
+    │   ├── boxmap.py                  # 垛堆模型（层高/编号、更新与保存）
+    │   └── visualize.py               # 2D 与 3D 可视化
+    └── start_fixed_l515_rgbd.sh       # 启动固定 L515 驱动
 ```
-
-`scripts/stack_box_mapper.py` 是**单文件自包含**程序，不依赖仓库内其它 Python 模块，可直接
-独立运行。
 
 ## 快速配置（首次部署）
 
@@ -75,17 +81,16 @@ stack_seg/
    `scripts/start_fixed_l515_rgbd.sh` 顶部的 `L515_RUNTIME_DIR` 指定）。
 
 2. **Python 环境**：需要一个**同时含 `rclpy`、`ultralytics`、`matplotlib`** 的解释器
-   （`rclpy` 随 ROS 2 安装，`ultralytics`/`matplotlib` 用 pip 装）。
-   本机已备好 `/home/han/venvs/stack-live/bin/python`；其它机器建议：
+   （`rclpy` 随 ROS 2 安装，`ultralytics`/`matplotlib` 用 pip 装）。推荐用
+   `--system-site-packages` 建 venv 以继承 ROS 2 的 `rclpy`：
 
    ```bash
-   python3 -m venv --system-site-packages stack-live   # 继承 ROS 2 的 rclpy
-   source stack-live/bin/activate
-   pip install -r requirements.txt                     # ultralytics + matplotlib 等
+   python3 -m venv --system-site-packages .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
    ```
 
-3. **相机标定**：内参、外参已随仓库分发（`config/camera.yaml` +
-   `config/fixed_l515_world_extrinsics_filtered.json`）。若更换相机或移动相机，需重新标定，
+3. **相机标定**：内参、外参已随仓库分发。若更换相机或移动相机，需重新标定，
    并更新 `config/camera.yaml`（相机 serial、`expected_map_sha256`）。
 
 4. **托盘参考**：首次运行前，在空托盘状态下执行模式 1，生成
@@ -99,22 +104,21 @@ stack_seg/
 ./scripts/start_fixed_l515_rgbd.sh
 ```
 
-终端 2 建图（**必须用含 `rclpy` + `ultralytics` + `matplotlib` 的解释器**，本机为
-`/home/han/venvs/stack-live/bin/python`，不能用系统 `python3`）：
+终端 2 建图（先 `source` ROS 2 并激活上面的 venv）：
 
 ```bash
 source /opt/ros/humble/setup.bash
-cd /path/to/stack_seg
-PY=/home/han/venvs/stack-live/bin/python
+source .venv/bin/activate
+cd stack_segmentation
 
 # 模式 1：空托盘时更新托盘参考
-$PY scripts/stack_box_mapper.py \
+python scripts/stack_box_mapper.py \
   --mode update_tray \
   --yolo-weights models/best.pt \
   --tray-reference record/tray_reference/tray_reference.json
 
 # 模式 2：建图（任意时刻打开）
-$PY scripts/stack_box_mapper.py \
+python scripts/stack_box_mapper.py \
   --mode map_stack \
   --tray-reference record/tray_reference/tray_reference.json \
   --yolo-weights models/best.pt \
@@ -131,19 +135,18 @@ $PY scripts/stack_box_mapper.py \
 
 ## 运行注意事项
 
-- **ROS 环境**：运行前 `source /opt/ros/humble/setup.bash`；`start_fixed_l515_rgbd.sh` 会自动
+- **ROS 环境**：运行前先 `source` ROS 2 的 `setup.bash`；`start_fixed_l515_rgbd.sh` 会自动
   export `ROS_DOMAIN_ID`、`RMW_IMPLEMENTATION`、`CYCLONEDDS_URI`（指向仓库内
   `config/cyclonedds_local.xml`）。
-- **不要设置 `PYTHONPATH=src`**：会覆盖 ROS 2 的 Python 路径，导致 `rclpy` 无法导入。
+- **不要设置 `PYTHONPATH`**：会覆盖 ROS 2 的 Python 路径，导致 `rclpy` 无法导入。
 - **L515 驱动**：专用脚本固定使用 librealsense 2.54.2，物理重插相机后需重启；不要用系统
-  `realsense-viewer`（2.58.3）启动这台 L515。
+  `realsense-viewer`（2.58.x）启动 L515。
 - **托盘参考**：需空托盘时生成；文件带地图 SHA256，地图不一致时拒绝加载。
 - **`mpl_toolkits`**：某些环境 `mpl_toolkits` 可能被系统旧版 namespace 劫持，程序已在内部
-  规避（`_preload_mplot3d`），无需手动处理。
+  规避，无需手动处理。
 - **YOLO 权重**：已随仓库分发于 `models/best.pt`；换模型时用 `--yolo-weights` 覆盖。
 - **运行数据不入库**：`record/` 下的点云、图像、结果均被 `.gitignore` 忽略。
 
-## 当前状态
+## 许可
 
-正式版垛堆建图程序已完成并真机验证，支持 A/B 双箱型四层码垛、标准目标区域编号、
-托盘更新与加载双模式、按实测位置冻结、活动层短暂丢失保持、深度兜底与 3D 可视化。
+本项目采用 [MIT License](./LICENSE)。
