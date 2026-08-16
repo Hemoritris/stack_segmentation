@@ -47,7 +47,9 @@ class YOLOSegmentor:
             from ultralytics import YOLO
         except ImportError as exc:
             raise RuntimeError(
-                "未找到 ultralytics，请在包含模型依赖的环境中运行（pip install ultralytics）"
+                "未找到 ultralytics。请使用同时含 rclpy + ultralytics + matplotlib 的 "
+                "Python 环境（如 venv --system-site-packages 后 pip install ultralytics），"
+                "不要用系统 python3。"
             ) from exc
         self.device = device
         self.conf = float(conf)

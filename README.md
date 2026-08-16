@@ -74,9 +74,14 @@ stack_seg/
    （librealsense 2.54.2 + RealSense ROS 4.54.1，安装目录通过
    `scripts/start_fixed_l515_rgbd.sh` 顶部的 `L515_RUNTIME_DIR` 指定）。
 
-2. **Python 依赖**（除 `rclpy` 外）：
+2. **Python 环境**：需要一个**同时含 `rclpy`、`ultralytics`、`matplotlib`** 的解释器
+   （`rclpy` 随 ROS 2 安装，`ultralytics`/`matplotlib` 用 pip 装）。
+   本机已备好 `/home/han/venvs/stack-live/bin/python`；其它机器建议：
+
    ```bash
-   pip install -r requirements.txt
+   python3 -m venv --system-site-packages stack-live   # 继承 ROS 2 的 rclpy
+   source stack-live/bin/activate
+   pip install -r requirements.txt                     # ultralytics + matplotlib 等
    ```
 
 3. **相机标定**：内参、外参已随仓库分发（`config/camera.yaml` +
@@ -94,25 +99,27 @@ stack_seg/
 ./scripts/start_fixed_l515_rgbd.sh
 ```
 
-终端 2 建图：
+终端 2 建图（**必须用含 `rclpy` + `ultralytics` + `matplotlib` 的解释器**，本机为
+`/home/han/venvs/stack-live/bin/python`，不能用系统 `python3`）：
 
 ```bash
 source /opt/ros/humble/setup.bash
 cd /path/to/stack_seg
+PY=/home/han/venvs/stack-live/bin/python
 
 # 模式 1：空托盘时更新托盘参考
-python scripts/stack_box_mapper.py \
+$PY scripts/stack_box_mapper.py \
   --mode update_tray \
   --yolo-weights models/best.pt \
   --tray-reference record/tray_reference/tray_reference.json
 
 # 模式 2：建图（任意时刻打开）
-python scripts/stack_box_mapper.py \
+$PY scripts/stack_box_mapper.py \
   --mode map_stack \
   --tray-reference record/tray_reference/tray_reference.json \
   --yolo-weights models/best.pt \
   --yolo-device 0 \
-  --inference-hz 10 \
+  --inference-hz 20 \
   --output record/stack_box_map
 ```
 
