@@ -218,6 +218,67 @@ PYTHONPATH=src /path/to/python scripts/run_real_pipeline.py \
 最大深度变化连通区域作为兜底。调试结果会额外保存 `yolo_image_mask.png`，并在
 `result.json` 的 `segmentation` 字段记录实际使用的方法、置信度和重叠度。
 
+### 正式版垛堆箱体建图（stack_box_mapper.py）
+
+`scripts/stack_box_mapper.py` 是正式版单文件程序，**不依赖仓库内其它 Python 模块**，
+可直接独立运行。面向两种箱型的四层码垛：
+
+- 箱型（顺序 长×宽×高）：
+  - A：`0.40 × 0.30 × 0.30 m`
+  - B：`0.42 × 0.27 × 0.21 m`
+- 层序：第 1、2 层为 A，第 3、4 层为 B；
+- 每层 6 箱：箱子长轴沿托盘短边（`tray +Y`，3D 里青色轴），短轴沿托盘长边（`tray +X`）；
+  因此长边方向排 3 个、短边方向排 2 个；
+- 编号按“标准目标区域”划分（与放置先后无关）：俯视托盘，`-Y` 侧一行 1、2、3，
+  `+Y` 侧一行 4、5、6。
+
+两个模式：
+
+- **`update_tray`**：检测空托盘，直接更新托盘参考文件（托盘移动后重跑一次即可）；
+- **`map_stack`**：加载已有托盘参考，可在码垛任意时刻打开。
+
+冻结与补全规则：
+
+- 识别到更高一层箱子时冻结前一层，位置**按实测锁定**，之后不再随帧更新；
+- 中途打开时，看不到的层（从未出现过）按标准位置补全 6 箱；
+- 活动层箱子连续 10 帧未识别才移除（容忍上层箱子/机械臂短暂遮挡）。
+
+YOLO 漏检兜底：当某个箱子 YOLO 检测不到时，用深度图找“高于托盘顶面”的区域，
+减去 YOLO 已识别的 mask，对剩余区域做连通域，得到 YOLO 遗漏的箱子候选，再走同样的
+几何校验。
+
+可视化：OpenCV 2D 窗口只显示活动层箱子；matplotlib 3D 窗口显示所有箱子
+（绿=活动层实测、蓝=冻结、橙=标准补全），并保留手动旋转/缩放。
+
+运行（终端 1 先启动 L515 驱动）：
+
+```bash
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file:///home/han/文档/segmentation/yp2orin/arm_control/cyclonedds_local.xml
+
+cd /home/han/文档/segmentation/stack_seg
+
+# 模式 1：空托盘时更新托盘参考
+/home/han/venvs/stack-live/bin/python scripts/stack_box_mapper.py \
+  --mode update_tray \
+  --yolo-weights /home/han/文档/segmentation/yolo_train/runs/fixed_l515_top_box_seg/fixed_l515_top_box_yolo26s_768/weights/best.pt \
+  --tray-reference record/tray_reference/tray_reference.json
+
+# 模式 2：建图（任意时刻打开）
+/home/han/venvs/stack-live/bin/python scripts/stack_box_mapper.py \
+  --mode map_stack \
+  --tray-reference record/tray_reference/tray_reference.json \
+  --yolo-weights /home/han/文档/segmentation/yolo_train/runs/fixed_l515_top_box_seg/fixed_l515_top_box_yolo26s_768/weights/best.pt \
+  --yolo-device 0 \
+  --inference-hz 10 \
+  --output record/stack_box_map
+```
+
+结果持续写入 `record/stack_box_map/boxmap.json`。首次运行时若 3D 窗口无法弹出，参见
+本文件底部“环境备注”里关于 `mpl_toolkits` 的说明。
+
 ### 实时 YOLO + RGB-D 测试
 
 新增脚本 `scripts/live_l515_yolo_test.py`。它持续显示固定 L515 RGB 画面、托盘轮廓、
@@ -431,3 +492,15 @@ V1 开发中。M0 已通过固定 L515 真机验收；M2、M3、M5～M8 已使�
 “YOLO mask × 深度变化区域”关联已实现；没有提供模型权重时仍保留深度连通区域兜底。
 实时 ROS RGB-D 读取、复杂多箱场景和多帧稳定性仍需要真机验证，尚不能视为 V1 最终验收。
 模块完成度与验收项以 `rgbd_box_4dof_stack_development_plan.md` 中的 checklist 为准。
+
+正式版垛堆箱体建图程序 `scripts/stack_box_mapper.py` 已完成（tag `stack-mapper-v1`），
+支持 A/B 双箱型四层码垛、按标准目标区域编号、托盘更新与加载双模式、按实测位置冻结、
+活动层短暂丢失保持、深度兜底与 3D 可视化，并已在真机上完成连续码垛验证。
+
+## 环境备注
+
+- 正式版脚本用 `/home/han/venvs/stack-live/bin/python` 运行（同时具备 `rclpy`、
+  `ultralytics` 与 `matplotlib`）。
+- 该环境中 `mpl_toolkits` 曾因缺少顶层 `__init__.py` 被系统旧版（matplotlib 3.5）
+  的 namespace 机制劫持，导致 3D 窗口报 `cannot import name 'docstring'`。正式版脚本已在
+  内部做了规避（`_preload_mplot3d` 手动加载当前环境的新版 `mpl_toolkits`），无需手动处理。
