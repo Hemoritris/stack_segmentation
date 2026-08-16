@@ -1,4 +1,4 @@
-# box_perception
+# stack_segmentation
 
 基于固定挂顶 RGB-D 相机（Intel RealSense L515）的箱体 4DoF 位姿估计与垛堆增量建模。
 
