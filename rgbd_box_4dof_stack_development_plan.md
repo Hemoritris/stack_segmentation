@@ -98,7 +98,7 @@ V3\ 多尺寸识别
 
 - [x] **M2 World Height Map**
 - [x] **M3 Before / After 深度时序变化检测**
-- [ ] **M4 Change Mask × YOLO 实例关联，识别新增箱子**
+- [x] **M4 Change Mask × YOLO 实例关联，识别新增箱子**（代码已接入，待复杂多箱真机验收）
 - [x] **M5 新箱 Mask + Depth → 单箱点云**（当前以最大新增连通区域代替 M4）
 - [x] **M6 RANSAC 顶面提取**
 - [x] **M7 minAreaRect 4DoF Baseline**
@@ -1191,7 +1191,7 @@ Layer-based Map
 - [ ] **M1** YOLO-Seg 实际挂顶多箱场景验证
 - [x] **M2** World Height Map
 - [x] **M3** Before / After 变化检测
-- [ ] **M4** Change Mask × YOLO → 新箱关联
+- [x] **M4** Change Mask × YOLO → 新箱关联（代码已接入，待复杂多箱真机验收）
 - [x] **M5** 新箱 Mask → 单箱点云（暂用最大新增连通区域）
 - [x] **M6** RANSAC 顶面
 - [x] **M7** minAreaRect baseline
@@ -1201,10 +1201,10 @@ Layer-based Map
 
 ---
 
-- [ ] **M10** StackMap
-- [ ] **M11** 箱子 ID / 添加 / 更新机制
-- [ ] **M12** 3D 可视化
-- [ ] **M13** 支撑关系
+- [x] **M10** StackMap 参数化地图（已接入实时 K 流程，待连续真机验收）
+- [x] **M11** 箱子 ID / 添加 / 更新机制（已实现 JSON 持久化，待连续真机验收）
+- [x] **M12** 3D 可视化数据接口（已实现实时 RGB 投影轮廓和 marker specs）
+- [x] **M13** 支撑关系（已实现高度匹配与 footprint overlap，待复杂垛堆验收）
 - [ ] **V2 验收**
 
 ---

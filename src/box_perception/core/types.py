@@ -83,6 +83,12 @@ class BoxState:
     height: float
     confidence: float = 0.0
     confirmed: bool = False
+    layer: int = 0
+    supported_by: list[int] = field(default_factory=list)
+    supports: list[int] = field(default_factory=list)
+    source: str = "fixed_l515"
+    size_source: str = "measured_rgbd"
+    timestamp: float = 0.0
 
 
 @dataclass
@@ -90,4 +96,7 @@ class StackMap:
     """Box-based 垛堆地图（而非 Layer-based）。"""
 
     boxes: list[BoxState] = field(default_factory=list)
-
+    schema_version: int = 1
+    world_frame: str = "slamware_map"
+    map_sha256: str = ""
+    tray_reference: dict[str, Any] | None = None

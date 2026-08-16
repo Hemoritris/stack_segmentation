@@ -18,8 +18,10 @@ from .geometry.plane_fitting import fit_top_plane, is_horizontal
 from .geometry.pointcloud import aligned_depth_to_pointcloud
 from .geometry.rectangle_init import fit_min_area_rect
 from .geometry.tray_detection import TrayDetectionArtifacts, detect_tray_from_depth
+from .segmentation.yolo_segmentor import YOLOSegmentor
 from .temporal.change_detector import detect_change
 from .temporal.height_map import HeightMap
+from .temporal.new_box_association import associate_new_box
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,7 @@ class RealPipelineArtifacts:
     world_roi: tuple[tuple[float, float], tuple[float, float]]
     top_points_world: np.ndarray
     tray_top_points_world: np.ndarray
+    yolo_image_mask: np.ndarray | None = None
 
 
 def _median_depth(depths: list[np.ndarray]) -> np.ndarray:
@@ -208,21 +211,38 @@ def estimate_box_from_world_clouds(
     min_height_change_m: float = 0.05,
     min_change_area_m2: float = 0.02,
     plane_distance_threshold_m: float = 0.008,
+    changed_world_points: np.ndarray | None = None,
 ) -> tuple[dict[str, Any], RealPipelineArtifacts]:
     length, width, expected_height = (float(value) for value in box_size)
     height_map = HeightMap(roi[0], roi[1], grid_size_m, aggregation="median")
     h_before = height_map.build(points_before)
     h_after = height_map.build(points_after)
-    change = detect_change(
-        h_before,
-        h_after,
-        grid_size_m=grid_size_m,
-        min_height_diff_m=min_height_change_m,
-        min_area_m2=min_change_area_m2,
-        morph_kernel=3,
-    )
-    min_cells = max(1, int(round(min_change_area_m2 / grid_size_m**2)))
-    component = _largest_component(change, min_cells)
+    if changed_world_points is None:
+        change = detect_change(
+            h_before,
+            h_after,
+            grid_size_m=grid_size_m,
+            min_height_diff_m=min_height_change_m,
+            min_area_m2=min_change_area_m2,
+            morph_kernel=3,
+        )
+        min_cells = max(1, int(round(min_change_area_m2 / grid_size_m**2)))
+        component = _largest_component(change, min_cells)
+        ix, iy, valid = height_map.world_to_indices(np.asarray(points_after)[:, :2])
+        keep = np.zeros(len(points_after), dtype=bool)
+        keep[valid] = component[iy[valid], ix[valid]]
+        changed_points = np.asarray(points_after, dtype=np.float64)[keep]
+    else:
+        changed_points = np.asarray(changed_world_points, dtype=np.float64)
+        if changed_points.ndim != 2 or changed_points.shape[1] != 3:
+            raise ValueError("changed_world_points must have shape (N, 3)")
+        if len(changed_points) < 100:
+            raise RuntimeError(
+                f"only {len(changed_points)} YOLO/depth-selected world points are available"
+            )
+        ix, iy, valid = height_map.world_to_indices(changed_points[:, :2])
+        component = np.zeros_like(h_after, dtype=bool)
+        component[iy[valid], ix[valid]] = True
 
     support_values = h_before[component & np.isfinite(h_before)]
     if len(support_values) < 20:
@@ -232,10 +252,6 @@ def estimate_box_from_world_clouds(
         raise RuntimeError("insufficient before-frame support surface samples")
     support_z = float(np.median(support_values))
 
-    ix, iy, valid = height_map.world_to_indices(np.asarray(points_after)[:, :2])
-    keep = np.zeros(len(points_after), dtype=bool)
-    keep[valid] = component[iy[valid], ix[valid]]
-    changed_points = np.asarray(points_after, dtype=np.float64)[keep]
     if len(changed_points) < 100:
         raise RuntimeError(f"only {len(changed_points)} changed world points are available")
 
@@ -331,6 +347,8 @@ def run_recorded_real_pipeline(
     tray_min_area_pixels: int = 5000,
     tray_plane_distance_threshold_m: float = 0.008,
     tray_reference: dict[str, Any] | None = None,
+    yolo_segmentor: YOLOSegmentor | None = None,
+    yolo_min_overlap: float = 0.2,
 ) -> tuple[dict[str, Any], RealPipelineArtifacts]:
     validate_recording_pair(before, after)
     b = before.median_depth_m
@@ -377,7 +395,34 @@ def run_recorded_real_pipeline(
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     image_change = cv2.morphologyEx(image_change.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
     image_change = cv2.morphologyEx(image_change, cv2.MORPH_OPEN, kernel)
-    image_component = _largest_component(image_change, min_area=500)
+    depth_component = _largest_component(image_change, min_area=500)
+    image_component = depth_component
+    yolo_mask: np.ndarray | None = None
+    segmentation_info: dict[str, Any] = {
+        "method": "depth_change_component",
+        "yolo_enabled": yolo_segmentor is not None,
+    }
+    if yolo_segmentor is not None:
+        instances = yolo_segmentor.segment(after.display_color_bgr)
+        observation = associate_new_box(
+            instances,
+            image_change.astype(bool),
+            min_overlap=float(yolo_min_overlap),
+        )
+        segmentation_info["instances"] = len(instances)
+        if observation is not None and int(np.count_nonzero(observation.instance_mask)) >= 500:
+            yolo_mask = np.asarray(observation.instance_mask, dtype=bool)
+            image_component = yolo_mask
+            segmentation_info.update(
+                {
+                    "method": "yolo_mask_intersection_with_depth_change",
+                    "confidence": float(observation.yolo_confidence),
+                    "change_overlap": float(observation.change_overlap),
+                    "mask_pixels": int(np.count_nonzero(yolo_mask)),
+                }
+            )
+        else:
+            segmentation_info["fallback"] = "depth_change_component"
 
     changed_camera = aligned_depth_to_pointcloud(
         a, k, distortion, mask=image_component, min_depth_m=0.2, max_depth_m=6.0
@@ -414,7 +459,9 @@ def run_recorded_real_pipeline(
         grid_size_m=grid_size_m,
         min_height_change_m=min_height_change_m,
         min_change_area_m2=min_change_area_m2,
+        changed_world_points=changed_world,
     )
+    result["segmentation"] = segmentation_info
     result["frame"] = str(after.manifest["world_frame"])
     result["yaw_convention"]["reference_frame"] = result["frame"]
     box_in_tray = pose_4dof_world_to_reference(result["pose_4dof"], tray["pose_4dof"])
@@ -437,5 +484,6 @@ def run_recorded_real_pipeline(
         world_roi=artifacts.world_roi,
         top_points_world=artifacts.top_points_world,
         tray_top_points_world=tray_artifacts.top_points_world,
+        yolo_image_mask=yolo_mask,
     )
     return result, artifacts

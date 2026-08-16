@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import cv2
@@ -28,6 +29,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=ROOT / "config/camera.yaml")
     parser.add_argument("--timeout", type=float, default=12.0)
+    parser.add_argument(
+        "--frames",
+        type=int,
+        default=1,
+        help="number of synchronized RGB-D pairs to read; values >1 also report live throughput",
+    )
     parser.add_argument("--stride", type=int, default=4)
     parser.add_argument("--min-depth", type=float, default=0.2)
     parser.add_argument("--max-depth", type=float, default=5.0)
@@ -38,6 +45,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.frames < 1:
+        raise ValueError("--frames must be at least 1")
     config_path = args.config.expanduser().resolve()
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     intrinsics = load_intrinsics(config_path, "color")
@@ -59,7 +68,22 @@ def main() -> int:
         depth_integer_scale_m=float(camera["depth_integer_scale_m"]),
         intrinsics_tolerance=float(ros["intrinsics_tolerance"]),
     ) as source:
-        frame = source.read(args.timeout)
+        arrival_times: list[float] = []
+        pair_offsets: list[float] = []
+        for _ in range(args.frames):
+            frame = source.read(args.timeout)
+            arrival_times.append(time.monotonic())
+            pair_offsets.append(frame.pair_offset_s)
+
+    if len(arrival_times) > 1:
+        intervals = np.diff(np.asarray(arrival_times, dtype=np.float64))
+        rate = float((len(arrival_times) - 1) / (arrival_times[-1] - arrival_times[0]))
+        print(
+            f"[PASS] live RGB-D throughput={rate:.2f} pairs/s, "
+            f"median/max gap={np.median(intervals):.3f}/{np.max(intervals):.3f}s, "
+            f"pair offset median/max-abs={np.median(pair_offsets) * 1000.0:+.2f}/"
+            f"{np.max(np.abs(pair_offsets)) * 1000.0:.2f}ms"
+        )
 
     points_camera = aligned_depth_to_pointcloud(
         frame.aligned_depth_m,

@@ -4,6 +4,10 @@ enable_infra: false
 # time on color only prevents the wrapper syncer from forming RGB-D framesets.
 rgb_camera.global_time_enabled: false
 depth_module.global_time_enabled: false
+# The L515 RSUSB backend performs this XU read about once per second. On this
+# host it blocks high-bandwidth RGB-D delivery, so keep it disabled. The patched
+# ROS wrapper preserves this value when installing its notification callback.
+depth_module.error_polling_enabled: false
 color_qos: SENSOR_DATA
 depth_qos: SENSOR_DATA
 # This is RealSense ROS software nearest-frame grouping, not hardware inter-camera

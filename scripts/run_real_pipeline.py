@@ -20,6 +20,7 @@ from box_perception.real_pipeline import (  # noqa: E402
     run_recorded_real_pipeline,
 )
 from box_perception.geometry.tray_detection import detect_tray_from_depth  # noqa: E402
+from box_perception.segmentation.yolo_segmentor import YOLOSegmentor  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,6 +56,19 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="reuse a frozen tray_reference.json instead of detecting the tray again",
     )
+    parser.add_argument(
+        "--yolo-weights",
+        type=Path,
+        help="optional YOLO-Seg weights; associate the selected instance with the depth change",
+    )
+    parser.add_argument(
+        "--yolo-device",
+        help="YOLO device, for example cpu or 0; default lets Ultralytics choose",
+    )
+    parser.add_argument("--yolo-imgsz", type=int, default=768)
+    parser.add_argument("--yolo-conf", type=float, default=0.35)
+    parser.add_argument("--yolo-min-overlap", type=float, default=0.20)
+    parser.add_argument("--yolo-mask-threshold", type=float, default=0.50)
     return parser.parse_args()
 
 
@@ -201,6 +215,11 @@ def _save_debug(
         str(output / "world_change_mask.png"),
         artifacts.world_change_mask.astype(np.uint8) * 255,
     )
+    if artifacts.yolo_image_mask is not None:
+        cv2.imwrite(
+            str(output / "yolo_image_mask.png"),
+            artifacts.yolo_image_mask.astype(np.uint8) * 255,
+        )
     cv2.imwrite(
         str(output / "tray_image_mask.png"),
         artifacts.tray_image_mask.astype(np.uint8) * 255,
@@ -342,6 +361,15 @@ def main() -> int:
         if args.tray_reference is not None
         else None
     )
+    yolo_segmentor = None
+    if args.yolo_weights is not None:
+        yolo_segmentor = YOLOSegmentor(
+            str(args.yolo_weights),
+            device=args.yolo_device,
+            conf=args.yolo_conf,
+            imgsz=args.yolo_imgsz,
+            mask_threshold=args.yolo_mask_threshold,
+        )
     result, artifacts = run_recorded_real_pipeline(
         before,
         after,
@@ -357,6 +385,8 @@ def main() -> int:
         tray_min_area_pixels=args.tray_min_area_pixels,
         tray_plane_distance_threshold_m=args.tray_plane_threshold,
         tray_reference=tray_reference,
+        yolo_segmentor=yolo_segmentor,
+        yolo_min_overlap=args.yolo_min_overlap,
     )
     _save_debug(
         args.output.expanduser().resolve(),
@@ -417,6 +447,8 @@ def main() -> int:
     print(f"result: {args.output.expanduser().resolve() / 'result.json'}")
     print(f"overlay: {args.output.expanduser().resolve() / 'overlay.png'}")
     print(f"tray overlay: {args.output.expanduser().resolve() / 'tray_overlay.png'}")
+    if artifacts.yolo_image_mask is not None:
+        print(f"YOLO mask: {args.output.expanduser().resolve() / 'yolo_image_mask.png'}")
     return 0
 
 

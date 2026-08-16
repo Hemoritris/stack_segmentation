@@ -55,7 +55,7 @@ python -m pip install -e ".[viz]"
 
 ## 固定 L515 真机 RGB-D 链路
 
-真机链路复用现有 ROS 2 RealSense 驱动，不再由 Python 直接占用 USB。当前配置固定为：
+真机链路复用现有 ROS 2 RealSense 驱动，不再由 Python 直接占用 USB。当前默认配置为：
 
 - 彩色：`1280x720@30`；
 - 原生深度：`1024x768@30`；
@@ -71,6 +71,9 @@ python -m pip install -e ".[viz]"
 cd /home/han/文档/segmentation/stack_seg
 ./scripts/start_fixed_l515_rgbd.sh
 ```
+
+如果 30 Hz 在当前负载下出现卡顿，可临时降低为 15 Hz：
+`L515_COLOR_FPS=15 ./scripts/start_fixed_l515_rgbd.sh`。
 
 本机同时安装了系统 librealsense `2.58.3` 和 L515 专用 librealsense `2.54.2`。
 该脚本固定使用专用 `2.54.2` 与 RealSense ROS `4.54.1`，启动时会打印并校验实际路径；
@@ -88,9 +91,11 @@ cd /home/han/文档/segmentation/stack_seg
 停止驱动、物理重新插拔 L515、等待约 3 秒后再启动；不要同时启动 `two_camera` 的
 `start_fixed_l515.sh`。
 
-L515 固件 `1.5.4.1` 可能周期性打印 `control_transfer ... index: 768 ...
-Resource temporarily unavailable`。该警告本身不等于图像中断；以三个目标话题存在且下方
-预检输出全部 `[PASS]` 为准。若预检超时或日志出现 `No such device`，再按 USB 掉线处理。
+专用启动脚本会关闭 librealsense 的热插拔监视、错误轮询和主机温度轮询，避免它们阻塞
+高分辨率 RGB-D 传输；相机物理重连后必须重启该脚本。启动阶段或长时间运行中偶发一条
+`control_transfer ... index: 768` 不等于图像中断，但不应再以约 1.2 秒的固定周期连续出现。
+以三个目标话题存在且下方预检输出全部 `[PASS]` 为准；若预检超时或出现 `No such device`，
+再按 USB 掉线处理。
 
 终端 2 检查一帧完整链路：
 
@@ -102,8 +107,11 @@ export CYCLONEDDS_URI=file:///home/han/文档/segmentation/yp2orin/arm_control/c
 
 cd /home/han/文档/segmentation/stack_seg
 /usr/bin/python3 scripts/check_real_rgbd.py \
+  --frames 30 \
   --output record/rgbd_preflight
 ```
+
+`--frames 30` 会额外打印 RGB-D 实际吞吐、帧间隔和同步时间差，适合判断是否仍有卡顿。
 
 这里不要写 `PYTHONPATH=src`。该脚本会自行加入项目的 `src` 目录；手动使用
 `PYTHONPATH=src` 会覆盖 ROS 2 设置的 Python 路径，导致 `rclpy` 无法导入。
@@ -182,6 +190,178 @@ cd /home/han/文档/segmentation/stack_seg
   --output record/real_result
 ```
 
+如果要启用固定 L515 专用的顶层箱体 YOLO-Seg 模型，使用包含
+`ultralytics` 和 `scipy` 的 Python 环境运行，并追加权重参数：
+
+```bash
+cd /home/han/文档/segmentation/stack_seg
+PYTHONPATH=src /path/to/python scripts/run_real_pipeline.py \
+  --before record/before \
+  --after record/after \
+  --tray-reference record/tray_reference/tray_reference.json \
+  --box-size 0.40 0.30 0.30 \
+  --output record/real_result_yolo \
+  --yolo-weights /home/han/文档/segmentation/yolo_train/runs/fixed_l515_top_box_seg/fixed_l515_top_box_yolo26s_768/weights/best.pt \
+  --yolo-device 0 \
+  --yolo-conf 0.35 \
+  --yolo-imgsz 768
+```
+
+当前机器的训练环境可使用：
+
+```bash
+/home/han/miniforge3/envs/box-seg/bin/python
+```
+
+该模式先用深度前后帧得到变化区域，再将 YOLO 实例与变化区域按重叠度关联，实际用于点云
+拟合的 mask 为 `YOLO mask ∩ depth change mask`。如果没有传入 `--yolo-weights`，仍使用原来的
+最大深度变化连通区域作为兜底。调试结果会额外保存 `yolo_image_mask.png`，并在
+`result.json` 的 `segmentation` 字段记录实际使用的方法、置信度和重叠度。
+
+### 实时 YOLO + RGB-D 测试
+
+新增脚本 `scripts/live_l515_yolo_test.py`。它持续显示固定 L515 RGB 画面、托盘轮廓、
+整个垛堆的箱体轮廓、世界/托盘 4DoF 和 FPS。加入 `--show-live-yolo` 后，画面会叠加
+YOLO 实例 mask、边界框、置信度、实例数和推理耗时；`--live-yolo-hz` 独立限制推理频率，
+不会要求每一张预览帧都执行 YOLO。每次成功后会把本次结果作为下一次 Before 状态，
+同时将新箱加入 `StackMap`，自动分配箱体 ID、计算层级和支撑关系。
+
+模式一：启动时重新识别托盘并保存新的托盘参考：
+
+```bash
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file:///home/han/文档/segmentation/yp2orin/arm_control/cyclonedds_local.xml
+
+cd /home/han/文档/segmentation/stack_seg
+/home/han/venvs/stack-live/bin/python scripts/live_l515_yolo_test.py \
+  --mode reidentify_tray \
+  --box-size 0.40 0.30 0.30 \
+  --tray-frames 5 \
+  --start-frames 5 \
+  --after-frames 5 \
+  --yolo-weights /home/han/文档/segmentation/yolo_train/runs/fixed_l515_top_box_seg/fixed_l515_top_box_yolo26s_768/weights/best.pt \
+  --yolo-device 0 \
+  --yolo-conf 0.35 \
+  --show-live-yolo \
+  --live-yolo-hz 2 \
+  --output record/live_reidentify
+```
+
+模式二：不重新识别托盘，直接复用已有托盘参考：
+
+```bash
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file:///home/han/文档/segmentation/yp2orin/arm_control/cyclonedds_local.xml
+
+cd /home/han/文档/segmentation/stack_seg
+/home/han/venvs/stack-live/bin/python scripts/live_l515_yolo_test.py \
+  --mode reuse_tray \
+  --tray-reference record/tray_reference/tray_reference.json \
+  --box-size 0.40 0.30 0.30 \
+  --start-frames 5 \
+  --after-frames 5 \
+  --yolo-weights /home/han/文档/segmentation/yolo_train/runs/fixed_l515_top_box_seg/fixed_l515_top_box_yolo26s_768/weights/best.pt \
+  --yolo-device 0 \
+  --yolo-conf 0.35 \
+  --show-live-yolo \
+  --live-yolo-hz 2 \
+  --output record/live_reuse
+```
+
+`reidentify_tray` 会先用 `--tray-frames` 帧更新托盘 4DoF，再用 `--start-frames` 帧建立
+箱体 Before 状态；`reuse_tray` 会校验托盘参考中的地图 SHA256，然后只建立当前 Before 状态。
+输出目录中保存 `tray_reference.json`（模式一）和每次 K 成功后的 `result_001.json`、
+`result_002.json` 等，并持续更新 `stack_map.json`。`stack_map.json` 是参数化垛堆地图，
+保存每个箱体的世界位姿、实测尺寸、层号、`supported_by` 和 `supports`。
+3D 显示默认使用 `measured_size_m` 的 RGB-D 测量结果，不使用预设 CAD 尺寸；只有
+测量尺寸缺失时才会记录并显示 `configured_fallback` 回退尺寸。箱体标签会显示当前使用的
+长×宽×高（mm）。托盘同样使用 `tray_reference.json` 中的实测长宽高。
+
+继续已有垛堆建模时，使用：
+
+```bash
+source /opt/ros/humble/setup.bash
+cd /home/han/文档/segmentation/stack_seg
+/home/han/venvs/stack-live/bin/python scripts/live_l515_yolo_test.py \
+  --mode reuse_tray \
+  --tray-reference record/tray_reference/tray_reference.json \
+  --resume-stack-map record/live_reuse/stack_map.json \
+  --output record/live_reuse
+```
+
+如果地图 SHA256 不一致，程序会拒绝加载旧 StackMap，避免把不同地图中的箱体混在一起。
+
+### 最高活动层冻结与 4DoF 跟踪测试
+
+`scripts/live_top_layer_tracker_test.py` 是独立测试程序，不修改正式 StackMap。它根据托盘
+顶面与箱体高度把最高有效顶面量化为层号；稳定检测到更高一层后冻结所有旧层，只更新最高
+活动层箱体的世界坐标 `x/y/z/yaw`。YOLO 只提供候选 mask，候选还必须通过有效深度比例、
+水平顶面 RANSAC、平面误差、实测长宽、顶面面积、矩形填充率、层高和托盘范围检查。
+因此只露出一部分但仍被 YOLO 检出的箱体会以红色 `REJECT` 显示，不会进入跟踪状态。
+
+```bash
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file:///home/han/文档/segmentation/yp2orin/arm_control/cyclonedds_local.xml
+
+cd /home/han/文档/segmentation/stack_seg
+/home/han/venvs/stack-live/bin/python scripts/live_top_layer_tracker_test.py \
+  --tray-reference record/tray_reference/tray_reference.json \
+  --box-size 0.40 0.30 0.30 \
+  --yolo-weights /home/han/文档/segmentation/yolo_train/runs/fixed_l515_top_box_seg/fixed_l515_top_box_yolo26s_768/weights/best.pt \
+  --yolo-device 0 \
+  --inference-hz 2 \
+  --output record/top_layer_tracking_test
+```
+
+显示颜色：绿色为当前活动层确认轨迹，蓝色为冻结层，黄色为暂时丢失后保持的活动轨迹，
+红色为未通过几何完整性校验的 YOLO 候选。按 `S` 保存测试状态，按 `Q` 保存并退出。
+测试状态只写入 `top_layer_tracker_state.json`；需要断点续测时追加：
+
+```bash
+--resume-state record/top_layer_tracking_test/top_layer_tracker_state.json
+```
+
+若要得到完整的历史冻结层，应从第一层开始持续运行，或使用 `--resume-state` 接续上次状态。
+如果第一次启动时现场已经堆到第三层，程序会正确跟踪第三层，但不会凭被遮挡的画面虚构第一、
+二层箱体位置。
+
+开始该功能前的正式文件备份位于
+`backups/top_layer_tracking_before_20260815.tar.gz`。
+
+### 交互式 3D 垛堆查看
+
+使用 `scripts/view_stack_map_3d.py` 查看参数化垛堆模型。程序默认持续监视
+`stack_map.json`，但只有文件发生变化时才重绘；实时测试程序每次按 `K` 后，三维窗口会自动刷新。
+默认坐标范围为 `X=0.5～2.0 m`、`Y=-1.5～0 m`、`Z=0～1.6 m`。
+
+```bash
+cd /home/han/文档/segmentation/stack_seg
+/usr/bin/python3 scripts/view_stack_map_3d.py \
+  record/live_stack_model/stack_map.json
+```
+
+窗口操作：
+
+- 鼠标左键拖动：环绕旋转，支持 360° 查看；
+- 鼠标滚轮：缩放；
+- `R`：恢复默认视角；
+- `Q` 或 `Esc`：退出。
+
+画面会显示托盘、托盘顶面中心原点、与实时画面一致的 `tray +X/tray +Y` 坐标轴、
+箱体 ID、层号和支撑虚线。只查看一次、不持续监视时添加
+`--no-watch`；保存截图可添加 `--save record/live_stack_model/stack_3d.png`。
+如需调整范围，可使用 `--x-min`、`--x-max`、`--y-min`、`--y-max` 和 `--z-max`。
+
+该脚本必须在同一个 Python 环境中同时运行 ROS 2、YOLO 和几何依赖；不能直接用当前只含
+`ultralytics` 的 `box-seg` Conda 环境，因为它没有 `rclpy`。如果只使用离线录制流程，仍按
+前面的 `run_real_pipeline.py` 使用 `box-seg` 环境。
+
 程序首先从 `before` 深度中分离高于地面的最大水平连通平面，得到托盘在 `slamware_map`
 下的 4DoF；随后对前后各 30 帧深度取像素中值，自动定位最大的新增深度区域，构建局部
 世界高度图，拟合箱体顶面和固定尺寸矩形，最终同时输出箱体世界 4DoF 与托盘局部 4DoF。
@@ -247,6 +427,7 @@ V1 开发中。M0 已通过固定 L515 真机验收；M2、M3、M5～M8 已使�
 `0.922 × 0.885 m`，世界 yaw 约 `-88.02°`，箱体相对托盘中心约为
 `(-0.175, 0.076) m`、相对 yaw 约 `55.67°`。
 
-当前真实数据 baseline 使用“最大新增连通区域”选择单箱，M1 YOLO-Seg、M4 多实例关联、
-M9 多帧稳定与置信度仍未实现，因此尚不能视为复杂多箱场景下的 V1 最终验收。模块完成度
-与验收项以 `rgbd_box_4dof_stack_development_plan.md` 中的 checklist 为准。
+当前已经接入固定 L515 专用 YOLO-Seg 模型：M1 的模型封装和 M4 的
+“YOLO mask × 深度变化区域”关联已实现；没有提供模型权重时仍保留深度连通区域兜底。
+实时 ROS RGB-D 读取、复杂多箱场景和多帧稳定性仍需要真机验证，尚不能视为 V1 最终验收。
+模块完成度与验收项以 `rgbd_box_4dof_stack_development_plan.md` 中的 checklist 为准。

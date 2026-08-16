@@ -82,7 +82,12 @@ class ROSAlignedRGBDSource:
     ) -> None:
         try:
             import rclpy
-            from rclpy.qos import qos_profile_sensor_data
+            from rclpy.qos import (
+                DurabilityPolicy,
+                HistoryPolicy,
+                QoSProfile,
+                ReliabilityPolicy,
+            )
             from sensor_msgs.msg import CameraInfo, Image
         except ImportError as exc:
             raise RuntimeError(
@@ -96,30 +101,35 @@ class ROSAlignedRGBDSource:
         self._max_pair_ns = int(max_pair_offset_s * 1e9)
         self._depth_scale = float(depth_integer_scale_m)
         self._intrinsics_tolerance = float(intrinsics_tolerance)
-        self._colors: deque[tuple[int, np.ndarray]] = deque(maxlen=12)
-        self._depths: deque[tuple[int, np.ndarray]] = deque(maxlen=12)
+        # Keep ROS messages, not decoded NumPy images.  At 1280x720 the eager
+        # color/depth conversion used to copy and convert frames that were
+        # already obsolete by the time a synchronized pair was selected.
+        # A depth-one BEST_EFFORT subscription also prevents DDS from handing
+        # Python a backlog after inference or GUI work temporarily pauses reads.
+        self._colors: deque[tuple[int, Any]] = deque(maxlen=3)
+        self._depths: deque[tuple[int, Any]] = deque(maxlen=3)
         self._camera_info: Any | None = None
         self._owns_context = not rclpy.ok()
         if self._owns_context:
             rclpy.init()
         self.node = rclpy.create_node("stack_seg_fixed_l515_rgbd_source")
-        self.node.create_subscription(Image, color_topic, self._on_color, qos_profile_sensor_data)
-        self.node.create_subscription(Image, depth_topic, self._on_depth, qos_profile_sensor_data)
+        latest_image_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self.node.create_subscription(Image, color_topic, self._on_color, latest_image_qos)
+        self.node.create_subscription(Image, depth_topic, self._on_depth, latest_image_qos)
         self.node.create_subscription(
-            CameraInfo, camera_info_topic, self._on_camera_info, qos_profile_sensor_data
+            CameraInfo, camera_info_topic, self._on_camera_info, latest_image_qos
         )
 
     def _on_color(self, message: Any) -> None:
-        try:
-            self._colors.append((stamp_ns(message), decode_color_image(message)))
-        except ValueError as exc:
-            self.node.get_logger().error(str(exc))
+        self._colors.append((stamp_ns(message), message))
 
     def _on_depth(self, message: Any) -> None:
-        try:
-            self._depths.append((stamp_ns(message), decode_depth_image(message, self._depth_scale)))
-        except ValueError as exc:
-            self.node.get_logger().error(str(exc))
+        self._depths.append((stamp_ns(message), message))
 
     def _on_camera_info(self, message: Any) -> None:
         self._camera_info = message
@@ -127,22 +137,27 @@ class ROSAlignedRGBDSource:
     def _take_pair(self) -> RGBDFrame | None:
         if not self._colors or not self._depths or self._camera_info is None:
             return None
-        best: tuple[int, int, int] | None = None
-        for color_index, (color_stamp, _color) in enumerate(self._colors):
-            for depth_index, (depth_stamp, _depth) in enumerate(self._depths):
+        best: tuple[int, int, int, int] | None = None
+        for color_index, (color_stamp, _color_message) in enumerate(self._colors):
+            for depth_index, (depth_stamp, _depth_message) in enumerate(self._depths):
                 delta = abs(color_stamp - depth_stamp)
-                if best is None or delta < best[0]:
-                    best = (delta, color_index, depth_index)
+                # Prefer the newest pair when two candidates have the same
+                # timestamp separation, keeping the preview close to real time.
+                candidate = (delta, -min(color_stamp, depth_stamp), color_index, depth_index)
+                if best is None or candidate < best:
+                    best = candidate
         assert best is not None
-        delta, color_index, depth_index = best
+        delta, _newest_key, color_index, depth_index = best
         if delta > self._max_pair_ns:
             if self._colors[0][0] < self._depths[0][0]:
                 self._colors.popleft()
             else:
                 self._depths.popleft()
             return None
-        color_stamp, color = self._colors[color_index]
-        depth_stamp, depth = self._depths[depth_index]
+        color_stamp, color_message = self._colors[color_index]
+        depth_stamp, depth_message = self._depths[depth_index]
+        color = decode_color_image(color_message)
+        depth = decode_depth_image(depth_message, self._depth_scale)
         if color.shape[:2] != depth.shape:
             raise RuntimeError(
                 f"aligned depth shape {depth.shape} does not match color {color.shape[:2]}"
@@ -160,8 +175,8 @@ class ROSAlignedRGBDSource:
         self._colors.clear()
         self._depths.clear()
         return RGBDFrame(
-            color_bgr=color.copy(),
-            aligned_depth_m=depth.copy(),
+            color_bgr=color,
+            aligned_depth_m=depth,
             intrinsics=self._configured,
             color_stamp_ns=color_stamp,
             depth_stamp_ns=depth_stamp,

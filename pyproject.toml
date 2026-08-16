@@ -23,6 +23,7 @@ vision = [
     "pyrealsense2>=2.54",
 ]
 viz = [
+    "matplotlib>=3.5",
     "open3d>=0.18",
 ]
 dev = [

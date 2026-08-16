@@ -12,15 +12,7 @@ source /home/han/文档/segmentation/yp2orin/realsense-ros-l515-runtime/setup.sh
 set -u
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-L515_COLOR_FPS="${L515_COLOR_FPS:-30}"
-L515_DEPTH_FPS="${L515_DEPTH_FPS:-30}"
 export LD_LIBRARY_PATH="${L515_SDK_PREFIX}/lib:${L515_ROS_DEPS}:${LD_LIBRARY_PATH:-}"
-# The locally built librealsense uses the RSUSB backend. Its polling-based
-# disconnect watcher stalls this L515's high-resolution RGB-D streams, so this
-# dedicated launch disables polling and requires a node restart after reconnect.
-export RS2_DISABLE_DEVICE_WATCHER=1
-export RS2_DISABLE_ERROR_POLLING=1
-export RS2_DISABLE_TEMPERATURE_POLLING=1
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 export CYCLONEDDS_URI="${CYCLONEDDS_URI:-file:///home/han/文档/segmentation/yp2orin/arm_control/cyclonedds_local.xml}"
@@ -44,7 +36,6 @@ fi
 echo "Using L515-compatible stack: RealSense ROS 4.54.1 + librealsense 2.54.2"
 echo "  ROS package: ${ACTUAL_ROS_PREFIX}"
 echo "  SDK: ${L515_SDK_PREFIX}"
-echo "  streams: color=1280x720@${L515_COLOR_FPS}, depth=1024x768@${L515_DEPTH_FPS}"
 
 if ! lsusb -d 8086:0b64 >/dev/null 2>&1; then
   echo "Intel RealSense L515 (8086:0b64) is not present on USB." >&2
@@ -78,10 +69,9 @@ fi
 exec ros2 launch realsense2_camera rs_launch.py \
   camera_name:=fixed_l515 \
   serial_no:=f1180517 \
-  enable_device_watcher:=false \
   config_file:="${ROOT_DIR}/config/fixed_l515_rgbd.yaml" \
-  rgb_camera.profile:=1280,720,"${L515_COLOR_FPS}" \
-  depth_module.profile:=1024,768,"${L515_DEPTH_FPS}" \
+  rgb_camera.profile:=1280,720,30 \
+  depth_module.profile:=1024,768,30 \
   enable_color:=true \
   enable_depth:=true \
   enable_confidence:=false \
