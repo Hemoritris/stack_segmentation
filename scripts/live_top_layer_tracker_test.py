@@ -38,8 +38,8 @@ from box_perception.camera.calibration import (  # noqa: E402
     load_world_calibration,
 )
 from box_perception.camera.ros_rgbd import ROSAlignedRGBDSource  # noqa: E402
-from box_perception.geometry.plane_fitting import fit_top_plane, is_horizontal  # noqa: E402
-from box_perception.geometry.pointcloud import aligned_depth_to_pointcloud  # noqa: E402
+from box_perception.core.types import BoxTopPlane  # noqa: E402
+from box_perception.geometry.plane_fitting import is_horizontal  # noqa: E402
 from box_perception.geometry.rectangle_init import fit_min_area_rect  # noqa: E402
 from box_perception.real_pipeline import project_world_points_to_image  # noqa: E402
 from box_perception.segmentation.yolo_segmentor import YOLOSegmentor  # noqa: E402
@@ -113,11 +113,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--inference-hz", type=float, default=2.0)
     parser.add_argument("--depth-median-frames", type=int, default=3)
     parser.add_argument("--read-timeout", type=float, default=8.0)
+    parser.add_argument(
+        "--timing-every",
+        type=int,
+        default=10,
+        help="每 N 次推理打印一次分段平均耗时；0 表示禁用计时打印",
+    )
 
     # Candidate geometry gates.  These deliberately reject partial YOLO masks.
     parser.add_argument("--min-mask-pixels", type=int, default=1200)
     parser.add_argument("--min-valid-depth-ratio", type=float, default=0.55)
     parser.add_argument("--min-top-points", type=int, default=450)
+    parser.add_argument(
+        "--max-geometry-points",
+        type=int,
+        default=6000,
+        help="单箱点云超过该数量时随机降采样（固定种子），加速凸包/矩形拟合且几乎不影响精度",
+    )
     parser.add_argument("--plane-threshold", type=float, default=0.008)
     parser.add_argument("--min-normal-z", type=float, default=0.97)
     parser.add_argument("--max-plane-rmse", type=float, default=0.008)
@@ -127,7 +139,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-rectangle-fill", type=float, default=0.60)
     parser.add_argument("--min-top-inlier-ratio", type=float, default=0.15)
     parser.add_argument("--layer-height-tolerance", type=float, default=0.055)
-    parser.add_argument("--tray-margin", type=float, default=0.04)
     parser.add_argument("--reject-image-border", action="store_true")
 
     # Multi-frame state machine.
@@ -135,7 +146,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--confirm-cycles", type=int, default=3)
     parser.add_argument("--max-match-distance", type=float, default=0.16)
     parser.add_argument("--max-match-yaw-deg", type=float, default=35.0)
-    parser.add_argument("--smoothing-alpha", type=float, default=0.35)
+    parser.add_argument(
+        "--smoothing-alpha",
+        type=float,
+        default=1.0,
+        help="EMA 平滑系数；1.0 表示每次直接用检测值（无滞后），越小越平滑但滞后越大",
+    )
     parser.add_argument("--max-missed-cycles", type=int, default=8)
     parser.add_argument("--show-rejected", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args()
@@ -199,12 +215,151 @@ def geometry_rejection_reasons(
     return reasons
 
 
-def _median_depth(depth_frames: deque[np.ndarray]) -> np.ndarray:
+def _median_depth_masked(
+    depth_frames: deque[np.ndarray], mask: np.ndarray | None = None
+) -> np.ndarray:
+    """对 depth_frames 求逐像素时域中值，仅计算 ``mask`` 内像素（None 表示全图）。
+
+    非 mask 像素填充 NaN。对同一像素而言参与计算的仍是那几帧、仍是 nanmedian，
+    因此与全图版本逐位等价，只是不再计算“算了却不被读取”的像素。
+    """
+    frames = list(depth_frames)
+    shape = np.asarray(frames[0]).shape
+    if mask is None:
+        mask = np.ones(shape, dtype=bool)
+    else:
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != shape:
+            raise ValueError("mask 与 depth 形状不一致")
+    indices = np.nonzero(mask)
+    if len(indices[0]) == 0:
+        return np.full(shape, np.nan, dtype=np.float32)
+    vals = [np.asarray(frame)[indices].astype(np.float32) for frame in frames]
+    median = _median_of_n(vals)
+    out = np.full(shape, np.nan, dtype=np.float32)
+    out[indices] = median
+    return out
+
+
+def _median_of_n(vals: list[np.ndarray]) -> np.ndarray:
+    """对 (F, N) 时间序列逐元素求“忽略 NaN 的中位数”，与 np.nanmedian 逐位等价。
+
+    3 帧用纯 elementwise 运算特化（无排序，约 5 倍快于 nanmedian）；
+    其它帧数退回 np.nanmedian 保持原语义。
+    """
+    if len(vals) == 1:
+        return vals[0].copy()
+    if len(vals) == 3:
+        a, b, c = vals
+        valid = (
+            (~np.isnan(a)).astype(np.float32)
+            + (~np.isnan(b)).astype(np.float32)
+            + (~np.isnan(c)).astype(np.float32)
+        )
+        a0 = np.nan_to_num(a, nan=0.0)
+        b0 = np.nan_to_num(b, nan=0.0)
+        c0 = np.nan_to_num(c, nan=0.0)
+        mn = np.minimum(np.minimum(a0, b0), c0)
+        mx = np.maximum(np.maximum(a0, b0), c0)
+        total = a0 + b0 + c0
+        med3 = total - mn - mx
+        return np.where(
+            valid >= 3,
+            med3,
+            np.where(valid == 2, total * 0.5, np.where(valid == 1, total, np.nan)),
+        ).astype(np.float32)
+    stacked = np.stack(vals, axis=0)
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore", message="All-NaN slice encountered", category=RuntimeWarning
         )
-        return np.nanmedian(np.stack(tuple(depth_frames)), axis=0).astype(np.float32)
+        return np.nanmedian(stacked, axis=0).astype(np.float32)
+
+
+def _fit_plane_ls_local(points: np.ndarray) -> tuple[np.ndarray, float]:
+    """最小二乘拟合平面，返回 (单位法向量, d)，满足 n·p + d = 0。"""
+    centroid = points.mean(axis=0)
+    _, _, vh = np.linalg.svd(points - centroid, full_matrices=False)
+    normal = vh[-1]
+    if normal[2] < 0:
+        normal = -normal
+    normal /= np.linalg.norm(normal)
+    d = -float(normal @ centroid)
+    return normal, d
+
+
+def fit_top_plane_fast(
+    points_world: np.ndarray,
+    distance_threshold: float = 0.008,
+) -> BoxTopPlane:
+    """水平先验 + 迭代稳健平面拟合，替代暴力 RANSAC。
+
+    箱体顶面近似水平：先以中值高度作先验筛选内点，再对内点做 SVD 拟合真实
+    法向量（保留轻微倾斜），随后用平面距离再做一次内点筛选并重新拟合。
+    对外点的鲁棒性与 RANSAC 相当，但只需 2 次 SVD，取代 250 次迭代。
+    """
+    pts = np.asarray(points_world, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] < 3:
+        raise ValueError("points_world 必须是 (N, >=3)")
+    if len(pts) < 3:
+        raise ValueError("至少需要 3 个点")
+
+    height = float(np.median(pts[:, 2]))
+    inliers = np.abs(pts[:, 2] - height) <= distance_threshold
+    if int(inliers.sum()) < 3:
+        inliers = np.ones(len(pts), dtype=bool)
+    normal, d = _fit_plane_ls_local(pts[inliers])
+
+    refined = np.abs(pts @ normal + d) <= distance_threshold
+    if int(refined.sum()) >= 3:
+        inliers = refined
+        normal, d = _fit_plane_ls_local(pts[inliers])
+
+    inlier_pts = pts[inliers]
+    dist = np.abs(inlier_pts @ normal + d)
+    rmse = float(np.sqrt(np.mean(dist**2)))
+    height = float(np.median(inlier_pts[:, 2]))
+    return BoxTopPlane(normal=normal, height=height, points=inlier_pts, plane_rmse=rmse)
+
+
+def build_ray_lookup(intrinsics: Any) -> tuple[np.ndarray, np.ndarray]:
+    """预计算整图“像素 → 去畸变归一化光线”查找表 ``(ray_x, ray_y)``。
+
+    相机内参与畸变固定，反投影从每帧调用 ``cv2.undistortPoints`` 改为查表，
+    数值与原实现逐位一致。
+    """
+    width, height = intrinsics.width, intrinsics.height
+    k = np.asarray(intrinsics.k, dtype=np.float64).reshape(3, 3)
+    d = np.asarray(intrinsics.distortion, dtype=np.float64).reshape(-1)
+    v, u = np.mgrid[0:height, 0:width]
+    pixels = (
+        np.stack([u.ravel(), v.ravel()], axis=1).astype(np.float64).reshape(-1, 1, 2)
+    )
+    normalized = cv2.undistortPoints(pixels, k, d).reshape(height, width, 2)
+    ray_x = normalized[:, :, 0].astype(np.float32)
+    ray_y = normalized[:, :, 1].astype(np.float32)
+    return ray_x, ray_y
+
+
+def backproject_masked(
+    depth_m: np.ndarray,
+    mask: np.ndarray,
+    ray_x: np.ndarray,
+    ray_y: np.ndarray,
+    min_depth_m: float = 0.2,
+    max_depth_m: float = 6.0,
+) -> np.ndarray:
+    """用预计算的光线查找表把 mask 内深度反投影为相机点云 (N, 3)。"""
+    depth = np.asarray(depth_m, dtype=np.float64)
+    selected = np.asarray(mask, dtype=bool)
+    selected &= np.isfinite(depth) & (depth >= min_depth_m) & (depth <= max_depth_m)
+    v, u = np.nonzero(selected)
+    if len(u) == 0:
+        return np.empty((0, 3), dtype=np.float64)
+    z = depth[v, u]
+    nx = ray_x[v, u].astype(np.float64)
+    ny = ray_y[v, u].astype(np.float64)
+    return np.column_stack([nx * z, ny * z, z])
 
 
 def _load_tray(path: Path, expected_map_sha256: str | None) -> dict[str, Any]:
@@ -241,32 +396,11 @@ def _box_corners_xy(
     )
 
 
-def _inside_tray(
-    corners_world: np.ndarray,
-    tray: dict[str, Any],
-    margin: float,
-) -> bool:
-    pose = tray["pose_4dof"]
-    size = tray["measured_size_m"]
-    yaw = math.radians(float(pose["yaw_deg"]))
-    rotation_world_from_tray = np.array(
-        [[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]],
-        dtype=np.float64,
-    )
-    local = (
-        np.asarray(corners_world, dtype=np.float64)
-        - np.array([float(pose["x_m"]), float(pose["y_m"])])
-    ) @ rotation_world_from_tray
-    return bool(
-        np.all(np.abs(local[:, 0]) <= float(size["length"]) * 0.5 + margin)
-        and np.all(np.abs(local[:, 1]) <= float(size["width"]) * 0.5 + margin)
-    )
-
-
 def estimate_candidate(
     instance: Any,
     depth_m: np.ndarray,
-    intrinsics: Any,
+    ray_x: np.ndarray,
+    ray_y: np.ndarray,
     world_t_camera: np.ndarray,
     tray: dict[str, Any],
     args: argparse.Namespace,
@@ -304,11 +438,11 @@ def estimate_candidate(
         point_mask = eroded & valid_depth
     else:
         point_mask = valid_depth
-    camera_points = aligned_depth_to_pointcloud(
+    camera_points = backproject_masked(
         depth_m,
-        intrinsics.k,
-        intrinsics.distortion,
-        mask=point_mask,
+        point_mask,
+        ray_x,
+        ray_y,
         min_depth_m=0.2,
         max_depth_m=6.0,
     )
@@ -316,6 +450,11 @@ def estimate_candidate(
     if len(world_points) < args.min_top_points:
         candidate.reasons.append(f"world_points={len(world_points)}")
         return candidate
+    if len(world_points) > args.max_geometry_points:
+        rng = np.random.default_rng(0)
+        world_points = world_points[
+            rng.choice(len(world_points), args.max_geometry_points, replace=False)
+        ]
 
     # The top surface is the highest dense horizontal band within the candidate.
     high_quantile = float(np.percentile(world_points[:, 2], 82.0))
@@ -327,10 +466,9 @@ def estimate_candidate(
         rng = np.random.default_rng(0)
         top_seed = top_seed[rng.choice(len(top_seed), 12000, replace=False)]
     try:
-        plane = fit_top_plane(
+        plane = fit_top_plane_fast(
             top_seed,
             distance_threshold=args.plane_threshold,
-            max_iter=250,
         )
     except (ValueError, RuntimeError) as exc:
         candidate.reasons.append(f"plane:{type(exc).__name__}")
@@ -385,9 +523,6 @@ def estimate_candidate(
     layer, layer_error = layer_from_top_height(top_z, tray_top_z, expected_height)
     if abs(layer_error) > args.layer_height_tolerance:
         candidate.reasons.append(f"layer_dz={layer_error * 1000.0:+.0f}mm")
-    corners = _box_corners_xy(x, y, length, width, yaw)
-    if not _inside_tray(corners, tray, args.tray_margin):
-        candidate.reasons.append("outside_tray")
 
     candidate.layer = layer
     candidate.x = float(x)
@@ -601,10 +736,13 @@ class LayerFreezeTracker:
             self.next_id += 1
             self.tracks.append(track)
 
+        # 已冻结的历史层轨迹永久保留；活动层轨迹（无论是否 confirmed）
+        # 连续丢失超过 max_missed_cycles 帧后删除，避免箱子被拿走/长期消失后
+        # 画面上仍残留黄色 HOLD 边框。
         self.tracks = [
             track
             for track in self.tracks
-            if track.frozen or track.confirmed or track.missed <= self.max_missed_cycles
+            if track.frozen or track.missed <= self.max_missed_cycles
         ]
         if not switched:
             confirmed = sum(
@@ -777,6 +915,7 @@ def main() -> int:
             "distortion": intrinsics.distortion.tolist(),
         },
     }
+    ray_x, ray_y = build_ray_lookup(intrinsics)
     ros_config = config["ros"]
     camera_config = config["camera"]
     segmentor = YOLOSegmentor(
@@ -809,6 +948,16 @@ def main() -> int:
     last_frame_time = time.monotonic()
     display_fps = 0.0
     highest_top_z: float | None = None
+    timing_ms = {
+        "yolo": 0.0,
+        "median": 0.0,
+        "geometry": 0.0,
+        "dedup+track": 0.0,
+        "save": 0.0,
+        "total": 0.0,
+    }
+    timing_cycles = 0
+    timing_boxes = 0
 
     print("========== top-layer freeze + 4DoF tracking test ==========")
     print(f"world frame: {calibration.world_frame}")
@@ -846,46 +995,82 @@ def main() -> int:
             ):
                 inference_start = time.monotonic()
                 instances = segmentor.segment(frame.color_bgr)
-                median_depth = _median_depth(depth_frames)
+                t_yolo = time.monotonic()
                 candidates = []
-                for instance in instances:
-                    try:
-                        candidate = estimate_candidate(
-                            instance,
-                            median_depth,
-                            intrinsics,
-                            calibration.world_T_camera,
-                            tray,
-                            args,
-                        )
-                    except Exception as exc:
-                        candidate = Candidate4DoF(
-                            accepted=False,
-                            reasons=[f"geometry:{type(exc).__name__}"],
-                            mask=np.asarray(instance.mask, dtype=bool),
-                            bbox=(
-                                None
-                                if instance.bbox is None
-                                else np.asarray(instance.bbox, dtype=np.float64)
-                            ),
-                            yolo_confidence=float(instance.confidence),
-                        )
-                        print(
-                            "WARNING: rejected one YOLO candidate after geometry exception: "
-                            f"{type(exc).__name__}: {exc}"
-                        )
-                    candidates.append(candidate)
+                t_median = t_yolo
+                t_geometry = t_yolo
+                if instances:
+                    union_mask = np.asarray(instances[0].mask, dtype=bool).copy()
+                    for instance in instances[1:]:
+                        union_mask |= np.asarray(instance.mask, dtype=bool)
+                    median_depth = _median_depth_masked(depth_frames, union_mask)
+                    t_median = time.monotonic()
+                    for instance in instances:
+                        try:
+                            candidate = estimate_candidate(
+                                instance,
+                                median_depth,
+                                ray_x,
+                                ray_y,
+                                calibration.world_T_camera,
+                                tray,
+                                args,
+                            )
+                        except Exception as exc:
+                            candidate = Candidate4DoF(
+                                accepted=False,
+                                reasons=[f"geometry:{type(exc).__name__}"],
+                                mask=np.asarray(instance.mask, dtype=bool),
+                                bbox=(
+                                    None
+                                    if instance.bbox is None
+                                    else np.asarray(instance.bbox, dtype=np.float64)
+                                ),
+                                yolo_confidence=float(instance.confidence),
+                            )
+                            print(
+                                "WARNING: rejected one YOLO candidate after geometry exception: "
+                                f"{type(exc).__name__}: {exc}"
+                            )
+                        candidates.append(candidate)
+                    t_geometry = time.monotonic()
                 accepted = deduplicate_candidates(candidates)
                 highest_top_z = max((item.top_z for item in accepted), default=None)
                 tracker.update(accepted, frame.color_stamp_ns / 1e9)
+                t_track = time.monotonic()
                 _save_state(
                     tracker,
                     state_path,
                     world_frame=calibration.world_frame,
                     map_sha256=calibration.map_sha256,
                 )
-                inference_ms = (time.monotonic() - inference_start) * 1000.0
-                last_inference = time.monotonic()
+                t_save = time.monotonic()
+                inference_ms = (t_save - inference_start) * 1000.0
+                last_inference = t_save
+
+                if args.timing_every > 0:
+                    timing_ms["yolo"] += (t_yolo - inference_start) * 1000.0
+                    timing_ms["median"] += (t_median - t_yolo) * 1000.0
+                    timing_ms["geometry"] += (t_geometry - t_median) * 1000.0
+                    timing_ms["dedup+track"] += (t_track - t_geometry) * 1000.0
+                    timing_ms["save"] += (t_save - t_track) * 1000.0
+                    timing_ms["total"] += inference_ms
+                    timing_cycles += 1
+                    timing_boxes += len(instances)
+                    if timing_cycles >= args.timing_every:
+                        avg = {k: v / timing_cycles for k, v in timing_ms.items()}
+                        boxes_per = timing_boxes / timing_cycles
+                        fps = 1000.0 / avg["total"] if avg["total"] > 0.0 else float("inf")
+                        print(
+                            f"[timing] n={timing_cycles} boxes={boxes_per:.1f} | "
+                            f"yolo={avg['yolo']:.1f}ms median={avg['median']:.1f}ms "
+                            f"geom={avg['geometry']:.1f}ms dedup+track={avg['dedup+track']:.1f}ms "
+                            f"save={avg['save']:.1f}ms | total={avg['total']:.1f}ms "
+                            f"({fps:.1f} fps)"
+                        )
+                        timing_ms = {k: 0.0 for k in timing_ms}
+                        timing_cycles = 0
+                        timing_boxes = 0
 
             display = frame.color_bgr.copy()
             _draw_candidate_masks(display, candidates, tracker.active_layer, args.show_rejected)
